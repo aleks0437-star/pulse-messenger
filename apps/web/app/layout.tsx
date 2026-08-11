@@ -1,0 +1,3 @@
+import type { Metadata,Viewport } from 'next';import './globals.css';import {Providers} from '@/components/providers';
+export const metadata:Metadata={title:'Pulse Messenger',description:'Личные, групповые и голосовые чаты',manifest:'/manifest.webmanifest',icons:{icon:'/icon.svg'}};export const viewport:Viewport={themeColor:[{media:'(prefers-color-scheme: light)',color:'#6366f1'},{media:'(prefers-color-scheme: dark)',color:'#111827'}],width:'device-width',initialScale:1,viewportFit:'cover'};
+export default function Layout({children}:{children:React.ReactNode}){return <html lang="ru" suppressHydrationWarning><body><Providers>{children}</Providers></body></html>}

@@ -1,0 +1,13 @@
+process.env.NODE_ENV = 'test';
+process.env.DATABASE_URL = 'postgresql://pulse:pulse@localhost:5432/pulse_test';
+process.env.REDIS_URL = 'redis://localhost:6379';
+process.env.JWT_SECRET = 'test-access-secret-at-least-32-characters';
+process.env.REFRESH_JWT_SECRET = 'test-refresh-secret-at-least-32-characters';
+process.env.WEB_ORIGINS = 'http://localhost:3000';
+process.env.S3_ACCESS_KEY = 'test-access-key';
+process.env.S3_SECRET_KEY = 'test-secret-key';
+process.env.S3_ENDPOINT = 'http://localhost:9000';
+process.env.S3_PUBLIC_URL = 'http://localhost:9000/pulse-media';
+process.env.LIVEKIT_API_KEY = 'test-livekit-key';
+process.env.LIVEKIT_API_SECRET = 'test-livekit-secret';
+process.env.NEXT_PUBLIC_LIVEKIT_URL = 'ws://localhost:7880';

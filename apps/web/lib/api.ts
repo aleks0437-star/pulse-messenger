@@ -1,0 +1,2 @@
+export const API=process.env.NEXT_PUBLIC_API_URL??'http://localhost:4000';
+export async function api<T>(path:string,options:RequestInit={}){const token=typeof window!=='undefined'?localStorage.getItem('pulse_token'):null;const r=await fetch(`${API}/api${path}`,{...options,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{ }),...options.headers}});if(!r.ok)throw new Error((await r.json().catch(()=>null))?.message??'Ошибка запроса');return r.json() as Promise<T>}

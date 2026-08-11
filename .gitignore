@@ -1,0 +1,10 @@
+node_modules
+.next
+dist
+.env
+coverage
+ci-artifacts
+playwright-report
+test-results
+*.log
+apps/api/prisma/dev.db

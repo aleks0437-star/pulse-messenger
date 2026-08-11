@@ -1,0 +1,165 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 20.19.5
+
+jobs:
+  quality:
+    name: Fast checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Typecheck and lint workspaces
+        run: npm run lint
+
+      - name: Run backend unit tests
+        run: npm run test:unit -w @pulse/api
+
+  integration:
+    name: Full stack integration
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CI: 'true'
+      NEXT_TELEMETRY_DISABLED: '1'
+      DATABASE_URL: postgresql://pulse:pulse@127.0.0.1:5432/pulse?schema=public
+      REDIS_URL: redis://127.0.0.1:6379
+      JWT_SECRET: ci-access-secret-at-least-32-characters-long
+      REFRESH_JWT_SECRET: ci-refresh-secret-at-least-32-characters-long
+      ACCESS_TOKEN_TTL_SECONDS: 900
+      REFRESH_TOKEN_TTL_SECONDS: 2592000
+      API_PORT: 4000
+      WEB_ORIGINS: http://localhost:3000
+      TRUST_PROXY: loopback
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+      NEXT_PUBLIC_WS_URL: http://localhost:4000
+      NEXT_PUBLIC_LIVEKIT_URL: ws://localhost:7880
+      LIVEKIT_URL: http://localhost:7880
+      LIVEKIT_API_KEY: devkey
+      LIVEKIT_API_SECRET: secret
+      S3_ENDPOINT: http://localhost:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: pulse-media
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: miniosecret
+      S3_FORCE_PATH_STYLE: 'true'
+      S3_PUBLIC_URL: http://localhost:9000/pulse-media
+      PLAYWRIGHT_WEB_URL: http://localhost:3000
+      PLAYWRIGHT_API_URL: http://localhost:4000
+      PLAYWRIGHT_SKIP_WEBSERVER: '1'
+      CI_WAIT_TIMEOUT_MS: '120000'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Start Compose dependencies
+        run: |
+          mkdir -p ci-artifacts
+          docker compose up -d postgres redis livekit minio minio-init
+          node scripts/ci/wait-for-compose.mjs
+          node scripts/ci/wait-for-endpoints.mjs tcp://127.0.0.1:7880
+
+      - name: Apply database migrations
+        run: npm run db:deploy
+
+      - name: Seed isolated CI database
+        run: npm run db:seed
+
+      - name: Build backend and frontend
+        run: npm run build
+
+      - name: Start production applications
+        shell: bash
+        env:
+          NODE_ENV: production
+        run: |
+          npm run start -w @pulse/api > ci-artifacts/backend.log 2>&1 &
+          echo $! > ci-artifacts/backend.pid
+          npm run start -w @pulse/web > ci-artifacts/frontend.log 2>&1 &
+          echo $! > ci-artifacts/frontend.pid
+          node scripts/ci/wait-for-endpoints.mjs \
+            http://127.0.0.1:4000/api/health \
+            http://127.0.0.1:3000/api/health
+
+      - name: Run backend unit and real-stack e2e tests
+        env:
+          REAL_STACK_TESTS: 1
+          REAL_STACK_API_URL: http://127.0.0.1:4000
+        run: npm test
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright smoke test
+        run: npm run test:smoke
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p ci-artifacts
+          docker compose ps --all > ci-artifacts/compose-ps.log 2>&1 || true
+          docker compose logs --no-color > ci-artifacts/compose.log 2>&1 || true
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulse-ci-failure-${{ github.run_id }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            ci-artifacts/**
+            apps/web/playwright-report/**
+            apps/web/test-results/**
+
+      - name: Stop applications and remove CI volumes
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f ci-artifacts/backend.pid ]]; then kill "$(cat ci-artifacts/backend.pid)" 2>/dev/null || true; fi
+          if [[ -f ci-artifacts/frontend.pid ]]; then kill "$(cat ci-artifacts/frontend.pid)" 2>/dev/null || true; fi
+          docker compose down -v --remove-orphans

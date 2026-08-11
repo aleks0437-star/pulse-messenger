@@ -1,0 +1,141 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+enum ChatType {
+  DIRECT
+  GROUP
+}
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+enum MessageKind {
+  TEXT
+  IMAGE
+  VIDEO
+  FILE
+  SYSTEM
+}
+enum VoiceParticipantState {
+  JOINED
+  LEFT
+}
+
+model User {
+  id String @id @default(cuid())
+  email String @unique
+  username String @unique
+  displayName String
+  passwordHash String
+  avatarUrl String?
+  bio String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  memberships ChatMember[]
+  messages Message[]
+  reactions MessageReaction[]
+  voiceParticipants VoiceRoomParticipant[]
+  createdChats Chat[] @relation("ChatCreator")
+  refreshTokens RefreshToken[]
+}
+
+model RefreshToken {
+  id String @id
+  userId String
+  tokenHash String @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+  replacedById String?
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, expiresAt])
+}
+
+model Chat {
+  id String @id @default(cuid())
+  type ChatType
+  title String?
+  avatarUrl String?
+  createdById String
+  createdBy User @relation("ChatCreator", fields: [createdById], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  members ChatMember[]
+  messages Message[]
+  voiceRooms VoiceRoom[]
+  @@index([updatedAt])
+}
+
+model ChatMember {
+  chatId String
+  userId String
+  role MemberRole @default(MEMBER)
+  joinedAt DateTime @default(now())
+  lastReadAt DateTime?
+  mutedUntil DateTime?
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([chatId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id String @id @default(cuid())
+  chatId String
+  authorId String
+  kind MessageKind @default(TEXT)
+  body String
+  mediaUrl String?
+  mediaName String?
+  mediaType String?
+  mediaSize Int?
+  replyToId String?
+  editedAt DateTime?
+  deletedAt DateTime?
+  createdAt DateTime @default(now())
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id])
+  replyTo Message? @relation("Replies", fields: [replyToId], references: [id])
+  replies Message[] @relation("Replies")
+  reactions MessageReaction[]
+  @@index([chatId, createdAt])
+}
+
+model MessageReaction {
+  messageId String
+  userId String
+  emoji String
+  createdAt DateTime @default(now())
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([messageId, userId, emoji])
+}
+
+model VoiceRoom {
+  id String @id @default(cuid())
+  chatId String
+  livekitRoomName String @unique
+  startedAt DateTime @default(now())
+  endedAt DateTime?
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  participants VoiceRoomParticipant[]
+}
+
+model VoiceRoomParticipant {
+  id String @id @default(cuid())
+  roomId String
+  userId String
+  state VoiceParticipantState @default(JOINED)
+  joinedAt DateTime @default(now())
+  leftAt DateTime?
+  isMuted Boolean @default(false)
+  room VoiceRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+  @@index([roomId, state])
+}
