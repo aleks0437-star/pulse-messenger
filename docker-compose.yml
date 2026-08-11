@@ -77,4 +77,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-http://localhost:4000}
+        NEXT_PUBLIC_LIVEKIT_URL: ${NEXT_PUBLIC_LIVEKIT_URL:-ws://localhost:7880}
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    depends_on:
+      backend: { condition: service_healthy }
+    ports: ["3000:3000"]
 volumes: { postgres_data: {}, minio_data: {} }
