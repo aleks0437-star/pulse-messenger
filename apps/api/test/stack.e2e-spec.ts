@@ -43,7 +43,7 @@ realStackDescribe('Pulse running stack e2e', () => {
   async function emitAck<T>(socket: Socket, event: string, payload: unknown) {
     return new Promise<T>((resolve, reject) => {
       socket.timeout(8_000).emit(event, payload, (error: Error | null, response: T) => {
-        error ? reject(error) : resolve(response);
+        error ? reject(new Error(`${event} acknowledgement failed: ${error.message}`)) : resolve(response);
       });
     });
   }

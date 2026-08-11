@@ -1,9 +1,9 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
+import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, SubscribeMessage, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
 import { IsString, MaxLength } from 'class-validator';
 import Redis from 'ioredis';
-import { Server, Socket } from 'socket.io';
+import { Namespace, Socket } from 'socket.io';
 import { ChatsService, MessageDto } from './chats';
 import { PrismaService } from './prisma.service';
 import { getAllowedOrigins } from './security';
@@ -23,18 +23,25 @@ export class PresenceService implements OnModuleDestroy {
 }
 
 @WebSocketGateway({ namespace:'chat', cors:{origin:getAllowedOrigins(),credentials:true} })
-export class ChatGateway implements OnGatewayConnection,OnGatewayDisconnect {
-  @WebSocketServer() server!:Server;
+export class ChatGateway implements OnGatewayInit,OnGatewayConnection,OnGatewayDisconnect {
+  @WebSocketServer() server!:Namespace;
   constructor(private jwt:JwtService,private presence:PresenceService,private chats:ChatsService,private db:PrismaService){}
+  afterInit(server:Namespace){
+    server.use((socket,next)=>{
+      this.authenticate(socket).then(()=>next()).catch(()=>next(new Error('unauthorized')));
+    });
+  }
+  private async authenticate(socket:Socket){
+    const raw=socket.handshake.auth.token??socket.handshake.headers.authorization?.replace('Bearer ','');
+    if(typeof raw!=='string')throw new Error('missing token');
+    const payload=this.jwt.verify<{sub:string;username:string;type:string}>(raw);
+    if(payload.type!=='access'||!await this.db.user.findUnique({where:{id:payload.sub},select:{id:true}}))throw new Error('invalid token');
+    socket.data.user={id:payload.sub,username:payload.username};
+  }
   async handleConnection(socket:Socket){
-    try{
-      const raw=socket.handshake.auth.token??socket.handshake.headers.authorization?.replace('Bearer ','');
-      if(typeof raw!=='string')throw new Error('missing token');
-      const payload=this.jwt.verify<{sub:string;username:string;type:string}>(raw);
-      if(payload.type!=='access'||!await this.db.user.findUnique({where:{id:payload.sub},select:{id:true}}))throw new Error('invalid token');
-      socket.data.user={id:payload.sub,username:payload.username};
-      await this.presence.online(payload.sub);socket.join(`user:${payload.sub}`);socket.broadcast.emit('presence:update',{userId:payload.sub,online:true});
-    }catch{socket.disconnect()}
+    const user=socket.data.user;
+    if(!user){socket.disconnect(true);return}
+    await this.presence.online(user.id);await socket.join(`user:${user.id}`);socket.broadcast.emit('presence:update',{userId:user.id,online:true});
   }
   async handleDisconnect(socket:Socket){if(socket.data.user){await this.presence.offline(socket.data.user.id);socket.broadcast.emit('presence:update',{userId:socket.data.user.id,online:false})}}
   @SubscribeMessage('presence:heartbeat') heartbeat(@ConnectedSocket()s:Socket){return this.presence.heartbeat(s.data.user.id)}
