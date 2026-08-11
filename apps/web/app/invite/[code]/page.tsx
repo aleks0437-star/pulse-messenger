@@ -30,17 +30,22 @@ export default function InvitePage() {
   }
   useEffect(() => {
     if (!code) return;
+    const hasToken = Boolean(getAccessToken());
+    setAuthenticated(hasToken);
     api<Preview>(`/invites/${encodeURIComponent(code)}`)
       .then((value) => {
         setPreview(value);
-        const hasToken = Boolean(getAccessToken());
-        setAuthenticated(hasToken);
         if (hasToken && !attempted.current) {
           attempted.current = true;
           void join();
         }
       })
-      .catch((reason) => setError((reason as Error).message));
+      .catch((reason) => {
+        if (hasToken && !attempted.current) {
+          attempted.current = true;
+          void join();
+        } else setError((reason as Error).message);
+      });
   }, [code]);
   return (
     <main className="grid min-h-[100dvh] place-items-center bg-slate-50 p-4 dark:bg-slate-950">

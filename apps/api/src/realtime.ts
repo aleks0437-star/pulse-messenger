@@ -31,12 +31,15 @@ export class ChatGateway implements OnGatewayInit,OnGatewayConnection,OnGatewayD
   async handleConnection(socket:Socket){
     const user=socket.data.user;
     if(!user){socket.disconnect(true);return}
-    await this.presence.online(user.id);await socket.join(`user:${user.id}`);socket.broadcast.emit('presence:update',{userId:user.id,online:true});
+    await this.presence.online(user.id,socket.id);await socket.join(`user:${user.id}`);
+    const memberships=await this.db.chatMember.findMany({where:{userId:user.id},select:{chatId:true}});
+    await Promise.all(memberships.map(member=>socket.join(`chat:${member.chatId}`)));
+    socket.broadcast.emit('presence:update',{userId:user.id,online:true});
   }
-  async handleDisconnect(socket:Socket){if(socket.data.user){await this.presence.closeChat(socket.data.user.id,socket.id,socket.data.activeChatId);await this.presence.offline(socket.data.user.id);socket.broadcast.emit('presence:update',{userId:socket.data.user.id,online:false})}}
+  async handleDisconnect(socket:Socket){if(socket.data.user){await this.presence.closeChat(socket.data.user.id,socket.id,socket.data.activeChatId);const stillOnline=await this.presence.offline(socket.data.user.id,socket.id);if(!stillOnline)socket.broadcast.emit('presence:update',{userId:socket.data.user.id,online:false})}}
   @SubscribeMessage('presence:heartbeat') heartbeat(@ConnectedSocket()s:Socket){return this.presence.heartbeat(s.data.user.id,s.id,s.data.activeChatId)}
-  @SubscribeMessage('chat:join') async join(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);await this.presence.openChat(s.data.user.id,s.id,d.chatId,s.data.activeChatId);s.data.activeChatId=d.chatId;await s.join(`chat:${d.chatId}`);return{ok:true}}
-  @SubscribeMessage('chat:leave') async leave(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){if(s.data.activeChatId===d.chatId){await this.presence.closeChat(s.data.user.id,s.id,d.chatId);s.data.activeChatId=undefined;await s.leave(`chat:${d.chatId}`)}return{ok:true}}
+  @SubscribeMessage('chat:join') async join(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);const previous=s.data.activeChatId;await this.presence.openChat(s.data.user.id,s.id,d.chatId,previous);s.data.activeChatId=d.chatId;await s.join(`chat:${d.chatId}`);return{ok:true}}
+  @SubscribeMessage('chat:leave') async leave(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){if(s.data.activeChatId===d.chatId){await this.presence.closeChat(s.data.user.id,s.id,d.chatId);s.data.activeChatId=undefined}return{ok:true}}
   @SubscribeMessage('message:send') async send(@ConnectedSocket()s:Socket,@MessageBody()d:SocketMessageDto){const m=await this.chats.send(d.chatId,s.data.user.id,d);this.realtime.broadcastMessage(d.chatId,m);return m}
   @SubscribeMessage('typing:start') async typingStart(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);s.to(`chat:${d.chatId}`).emit('typing:update',{chatId:d.chatId,userId:s.data.user.id,typing:true})}
   @SubscribeMessage('typing:stop') async typingStop(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);s.to(`chat:${d.chatId}`).emit('typing:update',{chatId:d.chatId,userId:s.data.user.id,typing:false})}

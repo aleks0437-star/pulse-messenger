@@ -16,6 +16,8 @@ class MemoryPrisma {
     findFirst:async({where}:any)=>this.users.find(user=>where.OR.some((item:any)=>(item.email&&user.email===item.email)||(item.username&&user.username===item.username)))??null,
     findUnique:async({where,select}:any)=>{const user=this.users.find(item=>item.id===where.id)??null;if(!user||!select)return user;return Object.fromEntries(Object.keys(select).filter(key=>select[key]).map(key=>[key,user[key]]))},
     update:async({where,data}:any)=>Object.assign(this.users.find(item=>item.id===where.id),data),
+    count:async({where}:any)=>this.users.filter(user=>where.id.in.includes(user.id)).length,
+    findMany:async()=>[],
   };
   refreshToken={
     create:async({data}:any)=>{this.tokens.push({...data,createdAt:new Date(),revokedAt:null,replacedById:null});return data},
@@ -28,12 +30,14 @@ class MemoryPrisma {
     findMany:async({where}:any)=>this.chats.filter(chat=>this.members.some(member=>member.chatId===chat.id&&member.userId===where.members.some.userId)).map(chat=>({...chat,members:this.members.filter(m=>m.chatId===chat.id).map(m=>({...m,user:this.safeUser(this.users.find(u=>u.id===m.userId))})),messages:this.messages.filter(m=>m.chatId===chat.id&&!m.deletedAt).slice(-1)})),
     update:async({where,data}:any)=>Object.assign(this.chats.find(item=>item.id===where.id),data),
     findUnique:async({where,select,include}:any)=>{const chat=this.chats.find(item=>item.id===where.id)??null;if(!chat)return null;if(select)return Object.fromEntries(Object.keys(select).filter(key=>select[key]).map(key=>[key,chat[key]]));if(include?.members)return{...chat,members:this.members.filter(member=>member.chatId===chat.id).map(member=>({...member,user:this.safeUser(this.users.find(user=>user.id===member.userId))}))};return chat},
+    findFirst:async()=>null,
   };
   chatMember={
     findUnique:async({where,include}:any)=>{const member=this.members.find(item=>item.chatId===where.chatId_userId.chatId&&item.userId===where.chatId_userId.userId)??null;return member&&include?.user?{...member,user:this.safeUser(this.users.find(user=>user.id===member.userId))}:member},
     create:async({data}:any)=>{const member={isMuted:false,mutedUntil:null,joinedAt:new Date(),...data};this.members.push(member);return member},
     update:async({where,data}:any)=>Object.assign(this.members.find(item=>item.chatId===where.chatId_userId.chatId&&item.userId===where.chatId_userId.userId),data),
     delete:async({where}:any)=>{const index=this.members.findIndex(item=>item.chatId===where.chatId_userId.chatId&&item.userId===where.chatId_userId.userId);return this.members.splice(index,1)[0]},
+    findMany:async({where,select}:any)=>this.members.filter(item=>where.userId===undefined||item.userId===where.userId).map(item=>select?.chatId?{chatId:item.chatId}:item),
   };
   chatInvite={
     create:async({data}:any)=>{const value={id:`i${++this.seq}`,usesCount:0,revokedAt:null,createdAt:new Date(),expiresAt:null,maxUses:null,...data};this.invites.push(value);return value},
@@ -46,11 +50,13 @@ class MemoryPrisma {
     findMany:async({where}:any)=>this.messages.filter(item=>item.chatId===where.chatId).map(item=>this.messageView(item)).reverse(),
     findUnique:async({where,select}:any)=>{const value=this.messages.find(item=>item.id===where.id)??null;if(!value||!select)return value;return Object.fromEntries(Object.keys(select).filter(key=>select[key]).map(key=>[key,value[key]]))},
     update:async({where,data}:any)=>Object.assign(this.messages.find(item=>item.id===where.id),data),
+    count:async()=>0,
   };
   messageReaction={
     findUnique:async({where}:any)=>this.reactions.find(item=>item.messageId===where.messageId_userId_emoji.messageId&&item.userId===where.messageId_userId_emoji.userId&&item.emoji===where.messageId_userId_emoji.emoji)??null,
     create:async({data}:any)=>{this.reactions.push(data);return data},
     delete:async({where}:any)=>{const key=where.messageId_userId_emoji;const index=this.reactions.findIndex(item=>item.messageId===key.messageId&&item.userId===key.userId&&item.emoji===key.emoji);return this.reactions.splice(index,1)[0]},
+    findMany:async({where}:any)=>this.reactions.filter(item=>item.messageId===where.messageId),
   };
   voiceRoom={findFirst:jest.fn(),create:jest.fn()}; voiceRoomParticipant={create:jest.fn(),updateMany:jest.fn()};
   $transaction=(operation:any)=>typeof operation==='function'?operation(this):Promise.all(operation);

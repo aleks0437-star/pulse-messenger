@@ -4,18 +4,21 @@ import { ChatsService } from '../src/chats';
 function harness() {
   const db: any = {
     chatMember: { findUnique: jest.fn(), update: jest.fn() },
-    chat: { create: jest.fn(), findMany: jest.fn() },
-    message: { findUnique: jest.fn(), findMany: jest.fn(), create: jest.fn(), update: jest.fn() },
-    messageReaction: { findUnique: jest.fn(), create: jest.fn(), delete: jest.fn() },
+    user:{count:jest.fn()},
+    chat: { create: jest.fn(), findMany: jest.fn(), findFirst:jest.fn() },
+    message: { findUnique: jest.fn(), findMany: jest.fn(), create: jest.fn(), update: jest.fn(), count:jest.fn() },
+    messageReaction: { findUnique: jest.fn(), findMany:jest.fn(), create: jest.fn(), delete: jest.fn() },
   };
   const storage: any = { assertMessageAttachment: jest.fn() };
   const push: any = { notifyNewMessage: jest.fn() };
-  return { db, storage, push, service: new ChatsService(db, storage, push) };
+  const realtime:any={reactionUpdated:jest.fn(),chatCreated:jest.fn()};
+  const presence:any={isOnline:jest.fn().mockResolvedValue(false)};
+  return { db, storage, push, realtime, presence, service: new ChatsService(db, storage, push,realtime,presence) };
 }
 
 describe('ChatsService membership and messages', () => {
   it('allows a member and rejects a non-member', async () => {
-    const { db, service } = harness();
+    const { db, realtime, service } = harness();
     db.chatMember.findUnique.mockResolvedValueOnce({ chatId: 'chat-1', userId: 'user-1' }).mockResolvedValueOnce(null);
     await expect(service.assertMember('chat-1', 'user-1')).resolves.toBeUndefined();
     await expect(service.assertMember('chat-1', 'stranger')).rejects.toBeInstanceOf(ForbiddenException);
@@ -33,7 +36,7 @@ describe('ChatsService membership and messages', () => {
   });
 
   it('blocks muted members and automatically clears an expired mute', async () => {
-    const { db, service } = harness();
+    const { db, realtime, service } = harness();
     db.chatMember.findUnique.mockResolvedValue({ chatId:'chat-1', userId:'user-1', isMuted:true, mutedUntil:null });
     await expect(service.send('chat-1','user-1',{body:'blocked'})).rejects.toBeInstanceOf(ForbiddenException);
     db.chatMember.findUnique.mockResolvedValue({ chatId:'chat-1', userId:'user-1', isMuted:true, mutedUntil:new Date(Date.now()-1000) });
@@ -69,13 +72,24 @@ describe('ChatsService membership and messages', () => {
   });
 
   it('adds/removes reactions for members and blocks outsiders', async () => {
-    const { db, service } = harness();
+    const { db, realtime, service } = harness();
     db.message.findUnique.mockResolvedValue({ id: 'message-1', chatId: 'chat-1', authorId: 'user-2' });
     db.chatMember.findUnique.mockResolvedValue({ chatId: 'chat-1', userId: 'user-1' });
     db.messageReaction.findUnique.mockResolvedValue(null);
     db.messageReaction.create.mockResolvedValue({ messageId: 'message-1', userId: 'user-1', emoji: '👍' });
-    await expect(service.react('message-1', 'user-1', '👍')).resolves.toMatchObject({ emoji: '👍' });
+    db.messageReaction.findMany.mockResolvedValue([{ messageId: 'message-1', userId: 'user-1', emoji: '👍' }]);
+    await expect(service.react('message-1', 'user-1', '👍')).resolves.toMatchObject({messageId:'message-1',reactions:[{emoji:'👍'}]});
+    expect(realtime.reactionUpdated).toHaveBeenCalledWith('chat-1','message-1',expect.any(Array));
     db.chatMember.findUnique.mockResolvedValue(null);
     await expect(service.react('message-1', 'stranger', '👍')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('returns real unread counts and member presence',async()=>{
+    const{db,presence,service}=harness();const lastReadAt=new Date('2026-01-01');
+    db.chat.findMany.mockResolvedValue([{id:'chat-1',members:[{userId:'user-1',lastReadAt,user:{id:'user-1'}},{userId:'user-2',lastReadAt:null,user:{id:'user-2'}}],messages:[]}]);
+    db.message.count.mockResolvedValue(4);presence.isOnline.mockImplementation((id:string)=>Promise.resolve(id==='user-2'));
+    const result=await service.list('user-1');
+    expect(db.message.count).toHaveBeenCalledWith({where:{chatId:'chat-1',deletedAt:null,authorId:{not:'user-1'},createdAt:{gt:lastReadAt}}});
+    expect(result[0]).toMatchObject({unreadCount:4,members:[{user:{online:false}},{user:{online:true}}]});
   });
 });

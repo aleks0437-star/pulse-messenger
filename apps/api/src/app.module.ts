@@ -14,10 +14,11 @@ import { VoiceController, VoiceService } from './voice';
 import { StorageController, StorageService } from './storage';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { HealthController } from './health';
+import { UsersController, UsersService } from './users';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }), ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 60 }]), JwtModule.registerAsync({ global: true, inject: [ConfigService], useFactory: (config: ConfigService) => ({ secret: config.getOrThrow<string>('JWT_SECRET') }) })],
-  controllers: [AuthController, ChatsController, VoiceController, StorageController, HealthController, PushController, ChatInvitesController, InvitesController, ModerationController],
-  providers: [PrismaService, AuthService, AuthRateLimitGuard, JwtStrategy, StorageService, ChatsService, ChatGateway, ChatRealtimeService, PresenceService, VoiceService, PushService, InvitesService],
+  controllers: [AuthController, ChatsController, VoiceController, StorageController, HealthController, PushController, ChatInvitesController, InvitesController, ModerationController, UsersController],
+  providers: [PrismaService, AuthService, AuthRateLimitGuard, JwtStrategy, StorageService, ChatsService, ChatGateway, ChatRealtimeService, PresenceService, VoiceService, PushService, InvitesService, UsersService],
 })
 export class AppModule {}

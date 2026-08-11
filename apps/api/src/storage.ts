@@ -7,6 +7,7 @@ import { IsEnum, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-valid
 import { randomUUID } from 'crypto';
 import { JwtAuthGuard } from './auth';
 import { PrismaService } from './prisma.service';
+import { ChatRealtimeService } from './chat-realtime';
 
 export enum UploadScope { MESSAGE = 'MESSAGE', USER_AVATAR = 'USER_AVATAR', CHAT_AVATAR = 'CHAT_AVATAR' }
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
@@ -37,7 +38,7 @@ export class StorageService {
   readonly avatarMax: number;
   readonly ttl: number;
 
-  constructor(private config: ConfigService, private db: PrismaService) {
+  constructor(private config: ConfigService, private db: PrismaService, private realtime:ChatRealtimeService) {
     const endpoint = config.get('S3_ENDPOINT', 'http://localhost:9000').replace(/\/$/, '');
     this.bucket = config.get('S3_BUCKET', 'pulse-media');
     this.publicBase = config.get('S3_PUBLIC_URL', `${endpoint}/${this.bucket}`).replace(/\/$/, '');
@@ -102,6 +103,24 @@ export class StorageService {
     if (this.sanitizeFileName(data.mediaName!) !== data.mediaName) throw new BadRequestException('Некорректное имя вложения');
     this.assertUrlScope(data.mediaUrl!, `message/${chatId}`);
   }
+  async updateUserAvatar(userId:string,avatarUrl:string){
+    this.assertUrlScope(avatarUrl,`avatar/user/${userId}`);
+    const user=await this.db.user.update({where:{id:userId},data:{avatarUrl},select:{id:true,username:true,displayName:true,avatarUrl:true}});
+    const memberships=await this.db.chatMember.findMany({where:{userId},select:{chatId:true}});
+    await Promise.all(memberships.map(async({chatId})=>{
+      const member=await this.db.chatMember.findUnique({where:{chatId_userId:{chatId,userId}},include:{user:{select:{id:true,username:true,displayName:true,avatarUrl:true}}}});
+      if(member)this.realtime.memberUpdated(chatId,member);
+    }));
+    return user;
+  }
+  async updateChatAvatar(chatId:string,userId:string,avatarUrl:string){
+    const member=await this.db.chatMember.findUnique({where:{chatId_userId:{chatId,userId}}});
+    if(!member||!['OWNER','ADMIN'].includes(member.role))throw new ForbiddenException('Аватар группы может менять администратор');
+    this.assertUrlScope(avatarUrl,`avatar/chat/${chatId}`);
+    const chat=await this.db.chat.update({where:{id:chatId},data:{avatarUrl}});
+    this.realtime.chatUpdated(chatId,chat);
+    return chat;
+  }
 }
 
 @Controller('uploads')
@@ -117,16 +136,11 @@ export class StorageController {
 
   @Patch('avatars/me')
   async userAvatar(@Req() req: any, @Body() dto: AvatarDto) {
-    this.storage.assertUrlScope(dto.avatarUrl, `avatar/user/${req.user.id}`);
-    return this.db.user.update({ where: { id: req.user.id }, data: { avatarUrl: dto.avatarUrl }, select: { id: true, username: true, displayName: true, avatarUrl: true } });
+    return this.storage.updateUserAvatar(req.user.id,dto.avatarUrl);
   }
 
   @Patch('avatars/chats/:chatId')
   async chatAvatar(@Req() req: any, @Body() dto: AvatarDto) {
-    const chatId = req.params.chatId;
-    const member = await this.db.chatMember.findUnique({ where: { chatId_userId: { chatId, userId: req.user.id } } });
-    if (!member || !['OWNER', 'ADMIN'].includes(member.role)) throw new ForbiddenException('Аватар группы может менять администратор');
-    this.storage.assertUrlScope(dto.avatarUrl, `avatar/chat/${chatId}`);
-    return this.db.chat.update({ where: { id: chatId }, data: { avatarUrl: dto.avatarUrl } });
+    return this.storage.updateChatAvatar(req.params.chatId,req.user.id,dto.avatarUrl);
   }
 }

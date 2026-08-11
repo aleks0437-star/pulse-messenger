@@ -5,10 +5,20 @@ import Redis from 'ioredis';
 export class PresenceService implements OnModuleDestroy {
   private redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
   private activeChatKey(chatId:string,userId:string){return `active-chat:${chatId}:${userId}`}
-  async online(id:string){await this.redis.set(`presence:${id}`,'1','EX',70)}
-  async offline(id:string){await this.redis.del(`presence:${id}`)}
+  private socketsKey(id:string){return`presence-sockets:${id}`}
+  async online(id:string,socketId?:string){
+    const transaction=this.redis.multi().set(`presence:${id}`,'1','EX',70);
+    if(socketId)transaction.sadd(this.socketsKey(id),socketId).expire(this.socketsKey(id),70);
+    await transaction.exec();
+  }
+  async offline(id:string,socketId?:string){
+    if(socketId)await this.redis.srem(this.socketsKey(id),socketId);
+    const remaining=socketId?await this.redis.scard(this.socketsKey(id)):0;
+    if(remaining>0){await this.redis.expire(this.socketsKey(id),70);return true}
+    await this.redis.del(`presence:${id}`,this.socketsKey(id));return false;
+  }
   async heartbeat(id:string,socketId?:string,chatId?:string){
-    await this.online(id);
+    await this.online(id,socketId);
     if(socketId&&chatId){const key=this.activeChatKey(chatId,id);await this.redis.multi().sadd(key,socketId).expire(key,70).exec()}
   }
   async openChat(userId:string,socketId:string,chatId:string,previousChatId?:string){

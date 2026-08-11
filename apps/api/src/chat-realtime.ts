@@ -8,7 +8,17 @@ export class ChatRealtimeService {
   constructor(private presence:PresenceService){}
   attach(namespace:Namespace){this.namespace=namespace}
   broadcastMessage(chatId:string,message:unknown){this.namespace?.to(`chat:${chatId}`).emit('message:new',message)}
+  reactionUpdated(chatId:string,messageId:string,reactions:unknown){this.namespace?.to(`chat:${chatId}`).emit('message:reaction',{chatId,messageId,reactions})}
   memberUpdated(chatId:string,member:unknown){this.namespace?.to(`chat:${chatId}`).emit('chat:member-updated',{chatId,member})}
+  chatUpdated(chatId:string,chat:unknown){this.namespace?.to(`chat:${chatId}`).emit('chat:updated',{chatId,chat})}
+  async chatCreated(userIds:string[],chatId:string,chat:unknown){
+    if(!this.namespace)return;
+    await Promise.all(userIds.map(async userId=>{
+      const sockets=await this.namespace!.in(`user:${userId}`).fetchSockets();
+      await Promise.all(sockets.map(socket=>socket.join(`chat:${chatId}`)));
+      this.namespace!.to(`user:${userId}`).emit('chat:created',chat);
+    }));
+  }
   memberRemoved(chatId:string,userId:string){this.namespace?.to(`chat:${chatId}`).emit('chat:member-removed',{chatId,userId})}
   async evict(chatId:string,userId:string){
     if(!this.namespace)return;

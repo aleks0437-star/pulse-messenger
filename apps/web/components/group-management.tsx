@@ -23,6 +23,7 @@ export type GroupMember = {
     username: string;
     displayName: string;
     avatarUrl?: string;
+    online?: boolean;
   };
 };
 type Invite = {
@@ -179,7 +180,7 @@ export function GroupManagement({
               className="rounded-2xl p-2 hover:bg-slate-50 dark:hover:bg-slate-800"
             >
               <div className="flex items-center gap-3">
-                <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-gradient-to-br from-indigo-400 to-violet-600 font-bold text-white">
+                <span className="relative grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-gradient-to-br from-indigo-400 to-violet-600 font-bold text-white">
                   {member.user.avatarUrl ? (
                     <img
                       src={member.user.avatarUrl}
@@ -189,6 +190,7 @@ export function GroupManagement({
                   ) : (
                     member.user.displayName[0]
                   )}
+                  {member.user.online&&<i className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white bg-emerald-400 dark:border-slate-900"/>}
                 </span>
                 <span className="min-w-0 flex-1">
                   <b className="block truncate">{member.user.displayName}</b>

@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { io, Socket } from "socket.io-client";
-import { api, AUTH_EVENT, getAccessToken, refreshSession } from "@/lib/api";
+import { API, api, AUTH_EVENT, getAccessToken, refreshSession } from "@/lib/api";
 import { uploadFile, validateUpload } from "@/lib/uploads";
 import {
   AttachmentPreview,
@@ -36,15 +36,18 @@ import {
 import { GroupManagement, GroupMember } from "./group-management";
 import { PushNotifications } from "./push-notifications";
 import { VoicePanel } from "./voice-panel";
+import { NewChatDialog } from "./new-chat-dialog";
 type User = {
   id: string;
   displayName: string;
   username: string;
   avatarUrl?: string;
+  online?: boolean;
 };
 type Reaction = { emoji: string; userId: string };
 type Message = {
   id: string;
+  chatId: string;
   body: string;
   kind?: "TEXT" | "IMAGE" | "VIDEO" | "FILE" | "SYSTEM";
   author: User;
@@ -66,6 +69,7 @@ type Chat = {
   avatarUrl?: string;
   members: GroupMember[];
   messages: Message[];
+  unreadCount?: number;
 };
 function avatar(name: string, online = false, url?: string) {
   return (
@@ -88,6 +92,11 @@ function title(c: Chat, me: string) {
     "Личный чат"
   );
 }
+function chatOnline(chat:Chat,me:string){return chat.members.some((member)=>member.user.id!==me&&member.user.online)}
+function listTime(value?:string){
+  if(!value)return"";const date=new Date(value);if(Number.isNaN(date.getTime()))return"";
+  const today=new Date();return date.toDateString()===today.toDateString()?date.toLocaleTimeString("ru",{hour:"2-digit",minute:"2-digit"}):date.toLocaleDateString("ru",{day:"2-digit",month:"2-digit"});
+}
 export function Messenger() {
   const { theme, setTheme } = useTheme();
   const [me, setMe] = useState<User>({
@@ -105,7 +114,7 @@ export function Messenger() {
   const [reply, setReply] = useState<Message | null>(null);
   const [editing, setEditing] = useState<Message | null>(null);
   const [typing, setTyping] = useState(false);
-  const [voice, setVoice] = useState<{ token: string; url: string } | null>(
+  const [voice, setVoice] = useState<{ token: string; url: string; chatId:string } | null>(
     null,
   );
   const [attachment, setAttachment] = useState<File | null>(null);
@@ -116,7 +125,11 @@ export function Messenger() {
     null,
   );
   const [toast, setToast] = useState("");
+  const [newChatOpen, setNewChatOpen] = useState(false);
+  const [wideLayout,setWideLayout]=useState(false);
   const uploadController = useRef<AbortController | null>(null);
+  const voiceRef = useRef<typeof voice>(null);
+  const leavingVoice = useRef(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const socket = useRef<Socket | null>(null);
   const active = chats.find((c) => c.id === activeId) ?? chats[0];
@@ -128,6 +141,16 @@ export function Messenger() {
       (!ownMembership.mutedUntil ||
         new Date(ownMembership.mutedUntil) > new Date()),
   );
+  useEffect(()=>{voiceRef.current=voice},[voice]);
+  useEffect(()=>{const media=window.matchMedia("(min-width:1280px)");const update=()=>setWideLayout(media.matches);update();media.addEventListener("change",update);return()=>media.removeEventListener("change",update)},[]);
+  useEffect(()=>{
+    const unload=()=>{
+      const current=voiceRef.current;const token=getAccessToken();
+      if(current&&token)void fetch(`${API}/api/voice/${current.chatId}/leave`,{method:"POST",headers:{Authorization:`Bearer ${token}`},keepalive:true});
+    };
+    window.addEventListener("beforeunload",unload);
+    return()=>window.removeEventListener("beforeunload",unload);
+  },[]);
   useEffect(() => {
     navigator.serviceWorker?.register("/sw.js");
     const token = getAccessToken();
@@ -163,15 +186,35 @@ export function Messenger() {
     window.addEventListener(AUTH_EVENT, updateSocketAuth);
     client.io.on("reconnect_attempt", updateSocketAuth);
     client.on("connect_error", reconnectWithRefresh);
-    socket.current.on("message:new", (m: Message) =>
-      setMessages((x) => (x.some((v) => v.id === m.id) ? x : [...x, m])),
+    socket.current.on("message:new", (m: Message) => {
+      const desktop = window.matchMedia("(min-width: 768px)").matches;
+      const visible = document.visibilityState === "visible" && (mobileChat || desktop);
+      if (m.chatId === activeId) {
+        setMessages((x) => (x.some((v) => v.id === m.id) ? x : [...x, m]));
+        if (visible) void api(`/chats/${m.chatId}/read`, { method: "POST" });
+      }
+      setChats((items) => items.map((chat) => chat.id === m.chatId ? {
+        ...chat,
+        messages:[m],
+        unreadCount:m.authorId !== me.id && !(m.chatId === activeId && visible) ? (chat.unreadCount ?? 0) + 1 : 0,
+      } : chat));
+    });
+    socket.current.on("presence:update", (event: {userId:string;online:boolean}) =>
+      setChats((items)=>items.map((chat)=>({...chat,members:chat.members.map((member)=>member.user.id===event.userId?{...member,user:{...member.user,online:event.online}}:member)}))),
     );
+    socket.current.on("message:reaction", (event:{messageId:string;reactions:Reaction[]}) =>
+      setMessages((items)=>items.map((message)=>message.id===event.messageId?{...message,reactions:event.reactions}:message)),
+    );
+    socket.current.on("chat:updated", (event:{chatId:string;chat:Partial<Chat>}) =>
+      setChats((items)=>items.map((chat)=>chat.id===event.chatId?{...chat,...event.chat}:chat)),
+    );
+    socket.current.on("chat:created",(chat:Chat)=>setChats((items)=>items.some((item)=>item.id===chat.id)?items:[{...chat,messages:chat.messages??[],unreadCount:0},...items]));
     socket.current.on("typing:update", (d: any) => {
       if (d.chatId === activeId) setTyping(d.typing);
     });
     socket.current.on(
       "chat:member-updated",
-      (event: { chatId: string; member: GroupMember }) =>
+      (event: { chatId: string; member: GroupMember }) => {
         setChats((items) =>
           items.map((chat) =>
             chat.id !== event.chatId
@@ -189,7 +232,9 @@ export function Messenger() {
                     : [...chat.members, event.member],
                 },
           ),
-        ),
+        );
+        setMessages((items)=>items.map((message)=>message.authorId===event.member.user.id?{...message,author:{...message.author,...event.member.user}}:message));
+      },
     );
     socket.current.on(
       "chat:member-removed",
@@ -244,11 +289,15 @@ export function Messenger() {
       client.off("connect_error", reconnectWithRefresh);
       socket.current?.disconnect();
     };
-  }, [activeId, mobileChat]);
+  }, [activeId, mobileChat, me.id]);
   useEffect(() => {
     if (!activeId) return;
     api<Message[]>(`/chats/${activeId}/messages`)
-      .then((x) => setMessages(x.reverse()))
+      .then((x) => {
+        setMessages(x.reverse());
+        setChats((items)=>items.map((chat)=>chat.id===activeId?{...chat,unreadCount:0}:chat));
+        return api(`/chats/${activeId}/read`,{method:"POST"});
+      })
       .catch(() => {});
     socket.current?.emit("chat:join", { chatId: activeId });
   }, [activeId]);
@@ -272,10 +321,13 @@ export function Messenger() {
     return () =>
       navigator.serviceWorker?.removeEventListener("message", listener);
   }, []);
-  function select(id: string) {
+  async function select(id: string) {
+    if(voice&&voice.chatId!==id){
+      if(!confirm("Покинуть текущий голосовой чат и открыть другой чат?"))return;
+      await leaveVoice();
+    }
     setActiveId(id);
     setMobileChat(true);
-    setVoice(null);
     setAttachment(null);
   }
   function chooseFile(file?: File) {
@@ -389,26 +441,44 @@ export function Messenger() {
       api(`/chats/messages/${m.id}`, { method: "DELETE" }).catch(() => {});
   }
   function react(m: Message, emoji: string) {
+    const existing=m.reactions.some((reaction)=>reaction.userId===me.id&&reaction.emoji===emoji);
+    const optimistic=existing?m.reactions.filter((reaction)=>!(reaction.userId===me.id&&reaction.emoji===emoji)):[...m.reactions,{emoji,userId:me.id}];
     setMessages((xs) =>
       xs.map((v) =>
         v.id === m.id
-          ? { ...v, reactions: [...v.reactions, { emoji, userId: me.id }] }
+          ? { ...v, reactions: optimistic }
           : v,
       ),
     );
     if (!m.id.startsWith("local"))
-      api(`/chats/messages/${m.id}/reactions`, {
+      api<{reactions:Reaction[]}>(`/chats/messages/${m.id}/reactions`, {
         method: "POST",
         body: JSON.stringify({ emoji }),
-      }).catch(() => {});
+      }).then((result)=>setMessages((items)=>items.map((message)=>message.id===m.id?{...message,reactions:result.reactions}:message)))
+        .catch((error)=>{setMessages((items)=>items.map((message)=>message.id===m.id?{...message,reactions:m.reactions}:message));setToast(error.message)});
+  }
+  async function leaveVoice(){
+    const current=voiceRef.current;if(!current||leavingVoice.current)return;
+    leavingVoice.current=true;
+    try{await api(`/voice/${current.chatId}/leave`,{method:"POST"})}
+    catch(error){setToast((error as Error).message)}
+    finally{voiceRef.current=null;setVoice(null);leavingVoice.current=false}
   }
   async function joinVoice() {
-    const v = await api<{ token: string; url: string }>(
-      `/voice/${activeId}/token`,
-      { method: "POST", body: JSON.stringify({ displayName: me.displayName }) },
-    );
-    setVoice(v);
-    setRightOpen(true);
+    if(voice)return;
+    try{
+      const v = await api<{ token: string; url: string }>(
+        `/voice/${activeId}/token`,
+        { method: "POST", body: JSON.stringify({ displayName: me.displayName }) },
+      );
+      setVoice({...v,chatId:activeId});
+      setRightOpen(true);
+    }catch(error){setToast(`Не удалось подключиться к голосовому чату: ${(error as Error).message}`)}
+  }
+  function acceptCreated(chat:Chat){
+    const normalized={...chat,messages:chat.messages??[],unreadCount:chat.unreadCount??0};
+    setChats((items)=>items.some((item)=>item.id===chat.id)?items.map((item)=>item.id===chat.id?normalized:item):[normalized,...items]);
+    setActiveId(chat.id);setMobileChat(true);
   }
   if (!active && !chatsLoaded)
     return (
@@ -418,7 +488,8 @@ export function Messenger() {
     );
   if (!active)
     return (
-      <div className="grid min-h-[100dvh] place-items-center bg-slate-50 p-4 dark:bg-slate-950">
+      <>
+       <div className="grid min-h-[100dvh] place-items-center bg-slate-50 p-4 dark:bg-slate-950">
         <section className="w-full max-w-lg rounded-3xl bg-white p-8 text-center shadow-xl dark:bg-slate-900">
           <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-indigo-500 text-white">
             <MessageCircle />
@@ -428,8 +499,12 @@ export function Messenger() {
           <p className="mt-1 text-sm text-slate-500">
             Откройте приглашение от друга, чтобы присоединиться к группе.
           </p>
+          <button onClick={()=>setNewChatOpen(true)} className="mt-5 inline-flex items-center gap-2 rounded-2xl bg-indigo-500 px-5 py-3 font-semibold text-white"><Plus size={18}/>Создать первый чат</button>
         </section>
-      </div>
+       </div>
+       <NewChatDialog open={newChatOpen} onClose={()=>setNewChatOpen(false)} onCreated={acceptCreated} onError={setToast}/>
+       {toast&&<div role="alert" className="fixed bottom-5 left-1/2 z-[80] -translate-x-1/2 rounded-2xl bg-slate-950 px-4 py-3 text-white">{toast}</div>}
+      </>
     );
   return (
     <>
@@ -470,6 +545,7 @@ export function Messenger() {
                 </button>
               ))}
               <button
+                onClick={() => setNewChatOpen(true)}
                 className="ml-auto rounded-xl bg-indigo-500 p-2 text-white"
                 aria-label="Создать группу"
                 title="Создать группу"
@@ -479,7 +555,7 @@ export function Messenger() {
             </div>
           </div>
           <nav className="scrollbar mt-3 flex-1 overflow-y-auto px-2">
-            {chats.map((c, i) => {
+            {chats.map((c) => {
               const n = title(c, me.id);
               return (
                 <button
@@ -487,11 +563,11 @@ export function Messenger() {
                   onClick={() => select(c.id)}
                   className={`flex w-full items-center gap-3 rounded-2xl p-3 text-left transition ${activeId === c.id ? "bg-indigo-50 dark:bg-indigo-950/40" : "hover:bg-slate-50 dark:hover:bg-slate-800/60"}`}
                 >
-                  {avatar(n, i < 2, c.avatarUrl)}
+                  {avatar(n, chatOnline(c,me.id), c.avatarUrl)}
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center justify-between">
                       <b className="truncate">{n}</b>
-                      <small className="text-slate-400">18:{20 + i}</small>
+                      <small className="text-slate-400">{listTime(c.messages[0]?.createdAt)}</small>
                     </span>
                     <span className="mt-1 flex items-center gap-2">
                       <span className="truncate text-sm text-slate-500">
@@ -499,9 +575,9 @@ export function Messenger() {
                           c.messages[0]?.mediaName ||
                           "Новый чат"}
                       </span>
-                      {i === 0 && (
+                      {Boolean(c.unreadCount) && (
                         <i className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-indigo-500 px-1 text-xs not-italic text-white">
-                          3
+                          {c.unreadCount! > 99 ? "99+" : c.unreadCount}
                         </i>
                       )}
                     </span>
@@ -564,11 +640,11 @@ export function Messenger() {
             >
               <ArrowLeft />
             </button>
-            {avatar(title(active, me.id), true, active.avatarUrl)}
+            {avatar(title(active, me.id), chatOnline(active,me.id), active.avatarUrl)}
             <div className="min-w-0">
               <h1 className="truncate font-bold">{title(active, me.id)}</h1>
               <p className="text-sm text-slate-500">
-                {typing ? "печатает…" : `${active.members.length} участника`}
+                {typing ? "печатает…" : active.type==="DIRECT"?(chatOnline(active,me.id)?"в сети":"не в сети"):`${active.members.length} участника`}
               </p>
             </div>
             {active.type === "GROUP" && (
@@ -581,7 +657,7 @@ export function Messenger() {
               </button>
             )}
             <button
-              onClick={() => setRightOpen(!rightOpen)}
+              onClick={() => setRightOpen(voice ? true : !rightOpen)}
               className={`${active.type === "DIRECT" ? "ml-auto" : ""} rounded-xl p-2.5 hover:bg-slate-100 dark:hover:bg-slate-800`}
               aria-label="Информация о чате"
             >
@@ -810,11 +886,12 @@ export function Messenger() {
           className={`${rightOpen ? "xl:flex" : "hidden"} hidden min-w-0 flex-col border-l border-slate-200 dark:border-slate-800`}
           aria-label="Информация о чате"
         >
-          {voice ? (
+          {voice&&wideLayout ? (
             <VoicePanel
               token={voice.token}
               url={voice.url}
-              onLeave={() => setVoice(null)}
+              onLeave={() => void leaveVoice()}
+              onError={setToast}
             />
           ) : (
             <>
@@ -920,7 +997,7 @@ export function Messenger() {
                       >
                         {avatar(
                           member.user.displayName,
-                          true,
+                          member.user.online,
                           member.user.avatarUrl,
                         )}
                         <b>{member.user.displayName}</b>
@@ -942,6 +1019,8 @@ export function Messenger() {
           )}
         </aside>
       </div>
+      {voice&&!wideLayout&&<div className="fixed inset-0 z-[65] bg-slate-950/60 md:grid md:place-items-center md:p-6"><section aria-label="Активный голосовой чат" className="h-full w-full overflow-hidden bg-white shadow-2xl dark:bg-slate-900 md:h-[min(720px,calc(100dvh-3rem))] md:max-w-md md:rounded-3xl"><VoicePanel token={voice.token} url={voice.url} onLeave={()=>void leaveVoice()} onError={setToast}/></section></div>}
+      <NewChatDialog open={newChatOpen} onClose={()=>setNewChatOpen(false)} onCreated={acceptCreated} onError={setToast}/>
       <ImageViewer image={viewer} onClose={() => setViewer(null)} />
       {toast && (
         <div

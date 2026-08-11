@@ -2,7 +2,7 @@ import { ChatGateway } from '../src/realtime';
 
 function socket(token = 'token') {
   return {
-    handshake: { auth: { token }, headers: {} }, data: {},
+    id:'socket-1',handshake: { auth: { token }, headers: {} }, data: {},
     disconnect: jest.fn(), join: jest.fn(), broadcast: { emit: jest.fn() },
   } as any;
 }
@@ -17,19 +17,20 @@ describe('ChatGateway handshake authentication', () => {
   it('accepts a valid access token for an existing user', async () => {
     const jwt: any = { verify: jest.fn().mockReturnValue({ sub: 'user-1', username: 'anna', type: 'access' }) };
     const presence: any = { online: jest.fn() };
-    const db: any = { user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-1' }) } };
+    const db: any = { user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-1' }) },chatMember:{findMany:jest.fn().mockResolvedValue([{chatId:'chat-1'}])} };
     const gateway = new ChatGateway(jwt, presence, {} as any, db, {attach:jest.fn()} as any);
     const client = socket();
     await installMiddleware(gateway)(client);
     await gateway.handleConnection(client);
     expect(client.disconnect).not.toHaveBeenCalled();
     expect(client.join).toHaveBeenCalledWith('user:user-1');
-    expect(presence.online).toHaveBeenCalledWith('user-1');
+    expect(client.join).toHaveBeenCalledWith('chat:chat-1');
+    expect(presence.online).toHaveBeenCalledWith('user-1',client.id);
   });
 
   it('disconnects missing, refresh or unknown-user tokens', async () => {
     const jwt: any = { verify: jest.fn().mockReturnValue({ sub: 'user-1', username: 'anna', type: 'refresh' }) };
-    const db: any = { user: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const db: any = { user: { findUnique: jest.fn().mockResolvedValue(null) },chatMember:{findMany:jest.fn()} };
     const gateway = new ChatGateway(jwt, { online: jest.fn() } as any, {} as any, db, {attach:jest.fn()} as any);
     const authenticate = installMiddleware(gateway);
     const refreshClient = socket(); await expect(authenticate(refreshClient)).rejects.toThrow('unauthorized');
@@ -42,7 +43,7 @@ describe('ChatGateway handshake authentication', () => {
     let resolveLookup!: (user: { id: string }) => void;
     const lookup = new Promise<{ id: string }>(resolve => { resolveLookup = resolve; });
     const jwt: any = { verify: jest.fn().mockReturnValue({ sub: 'user-1', username: 'anna', type: 'access' }) };
-    const db: any = { user: { findUnique: jest.fn().mockReturnValue(lookup) } };
+    const db: any = { user: { findUnique: jest.fn().mockReturnValue(lookup) },chatMember:{findMany:jest.fn()} };
     const gateway = new ChatGateway(jwt, { online: jest.fn() } as any, {} as any, db, {attach:jest.fn()} as any);
     const client = socket();
     const authentication = installMiddleware(gateway)(client);

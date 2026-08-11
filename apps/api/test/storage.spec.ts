@@ -10,8 +10,9 @@ function harness(member: any = { role: 'MEMBER' }) {
     } as Record<string, unknown>)[key] ?? fallback),
     getOrThrow: jest.fn((key: string) => key === 'S3_ACCESS_KEY' ? 'minio' : 'miniosecret'),
   };
-  const db: any = { chatMember: { findUnique: jest.fn().mockResolvedValue(member) } };
-  return { db, service: new StorageService(config, db) };
+  const db: any = { chatMember: { findUnique: jest.fn().mockResolvedValue(member),findMany:jest.fn() },user:{update:jest.fn()},chat:{update:jest.fn()} };
+  const realtime:any={memberUpdated:jest.fn(),chatUpdated:jest.fn()};
+  return { db,realtime, service: new StorageService(config, db,realtime) };
 }
 
 describe('StorageService presigned uploads', () => {
@@ -21,6 +22,13 @@ describe('StorageService presigned uploads', () => {
     expect(result.uploadUrl).toContain('X-Amz-Signature=');
     expect(result.fileUrl).toContain('/message/chat-1/');
     expect(result.expiresIn).toBe(300);
+  });
+
+  it('broadcasts group avatar changes to connected members',async()=>{
+    const{db,realtime,service}=harness({role:'ADMIN'});const url='http://localhost:9000/pulse-media/avatar/chat/chat-1/avatar.png';
+    db.chat.update.mockResolvedValue({id:'chat-1',avatarUrl:url});
+    await service.updateChatAvatar('chat-1','admin',url);
+    expect(realtime.chatUpdated).toHaveBeenCalledWith('chat-1',{id:'chat-1',avatarUrl:url});
   });
 
   it('rejects an upload to a foreign chat', async () => {
