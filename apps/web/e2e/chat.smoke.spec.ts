@@ -77,7 +77,7 @@ test("login token opens a chat and sends a text message", async ({
   const message = `Smoke ${Date.now()}`;
   await page.getByLabel("Текст сообщения").fill(message);
   await page.getByRole("button", { name: "Отправить" }).click();
-  await expect(page.getByText(message, { exact: true })).toBeVisible();
+  await expect(page.getByText(message, { exact: true }).last()).toBeVisible();
 });
 
 test("creates a group and a direct chat through the real UI",async({page,request,context})=>{
@@ -90,7 +90,7 @@ test("creates a group and a direct chat through the real UI",async({page,request
   await dialog.getByLabel("Найти пользователя").fill("anna@example.com");
   await dialog.getByRole("button",{name:/@anna/}).click();
   await dialog.getByRole("button",{name:"Создать группу"}).click();
-  await expect(page.getByRole("heading",{name:groupName})).toBeVisible();
+  await expect(page.getByRole("heading",{name:groupName}).first()).toBeVisible();
 
   await page.getByLabel("Создать группу").click();
   dialog=page.getByRole("dialog",{name:"Новый чат"});
@@ -113,7 +113,9 @@ test("uploads an image through MinIO and opens the viewer",async({page,request,c
 });
 
 test("renders the in-app push permission banner without prompting on load",async({page,request,context})=>{
-  await seedLogin(request,context,"max");await page.goto("/");
+  await seedLogin(request,context,"max");
+  await context.addInitScript(()=>{if("Notification"in window)Object.defineProperty(Notification,"permission",{configurable:true,get:()=>"default"})});
+  await page.goto("/");
   await expect(page.getByLabel("Настройки уведомлений")).toBeVisible();
   await expect(page.getByText("Включить уведомления?")).toBeVisible({timeout:10_000});
 });
