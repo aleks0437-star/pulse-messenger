@@ -1,26 +1,14 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, SubscribeMessage, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
 import { IsString, MaxLength } from 'class-validator';
-import Redis from 'ioredis';
 import { Namespace, Socket } from 'socket.io';
 import { ChatsService, MessageDto } from './chats';
+import { PresenceService } from './presence';
 import { PrismaService } from './prisma.service';
 import { getAllowedOrigins } from './security';
 
 class ChatEventDto { @IsString() @MaxLength(64) chatId!: string; }
 class SocketMessageDto extends MessageDto { @IsString() @MaxLength(64) chatId!: string; }
-
-@Injectable()
-export class PresenceService implements OnModuleDestroy {
-  private redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
-  async online(id:string){await this.redis.set(`presence:${id}`,'1','EX',70)}
-  async offline(id:string){await this.redis.del(`presence:${id}`)}
-  async heartbeat(id:string){await this.online(id)}
-  async isOnline(id:string){return Boolean(await this.redis.exists(`presence:${id}`))}
-  async ping(){return this.redis.ping()}
-  async onModuleDestroy(){await this.redis.quit()}
-}
 
 @WebSocketGateway({ namespace:'chat', cors:{origin:getAllowedOrigins(),credentials:true} })
 export class ChatGateway implements OnGatewayInit,OnGatewayConnection,OnGatewayDisconnect {
@@ -43,9 +31,10 @@ export class ChatGateway implements OnGatewayInit,OnGatewayConnection,OnGatewayD
     if(!user){socket.disconnect(true);return}
     await this.presence.online(user.id);await socket.join(`user:${user.id}`);socket.broadcast.emit('presence:update',{userId:user.id,online:true});
   }
-  async handleDisconnect(socket:Socket){if(socket.data.user){await this.presence.offline(socket.data.user.id);socket.broadcast.emit('presence:update',{userId:socket.data.user.id,online:false})}}
-  @SubscribeMessage('presence:heartbeat') heartbeat(@ConnectedSocket()s:Socket){return this.presence.heartbeat(s.data.user.id)}
-  @SubscribeMessage('chat:join') async join(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);s.join(`chat:${d.chatId}`);return{ok:true}}
+  async handleDisconnect(socket:Socket){if(socket.data.user){await this.presence.closeChat(socket.data.user.id,socket.id,socket.data.activeChatId);await this.presence.offline(socket.data.user.id);socket.broadcast.emit('presence:update',{userId:socket.data.user.id,online:false})}}
+  @SubscribeMessage('presence:heartbeat') heartbeat(@ConnectedSocket()s:Socket){return this.presence.heartbeat(s.data.user.id,s.id,s.data.activeChatId)}
+  @SubscribeMessage('chat:join') async join(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);await this.presence.openChat(s.data.user.id,s.id,d.chatId,s.data.activeChatId);s.data.activeChatId=d.chatId;await s.join(`chat:${d.chatId}`);return{ok:true}}
+  @SubscribeMessage('chat:leave') async leave(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){if(s.data.activeChatId===d.chatId){await this.presence.closeChat(s.data.user.id,s.id,d.chatId);s.data.activeChatId=undefined;await s.leave(`chat:${d.chatId}`)}return{ok:true}}
   @SubscribeMessage('message:send') async send(@ConnectedSocket()s:Socket,@MessageBody()d:SocketMessageDto){const m=await this.chats.send(d.chatId,s.data.user.id,d);this.server.to(`chat:${d.chatId}`).emit('message:new',m);return m}
   @SubscribeMessage('typing:start') async typingStart(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);s.to(`chat:${d.chatId}`).emit('typing:update',{chatId:d.chatId,userId:s.data.user.id,typing:true})}
   @SubscribeMessage('typing:stop') async typingStop(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);s.to(`chat:${d.chatId}`).emit('typing:update',{chatId:d.chatId,userId:s.data.user.id,typing:false})}

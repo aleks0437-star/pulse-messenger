@@ -9,7 +9,8 @@ function harness() {
     messageReaction: { findUnique: jest.fn(), create: jest.fn(), delete: jest.fn() },
   };
   const storage: any = { assertMessageAttachment: jest.fn() };
-  return { db, storage, service: new ChatsService(db, storage) };
+  const push: any = { notifyNewMessage: jest.fn() };
+  return { db, storage, push, service: new ChatsService(db, storage, push) };
 }
 
 describe('ChatsService membership and messages', () => {
@@ -21,11 +22,12 @@ describe('ChatsService membership and messages', () => {
   });
 
   it('sends a message only to a joined chat', async () => {
-    const { db, service } = harness();
+    const { db, push, service } = harness();
     db.chatMember.findUnique.mockResolvedValue({ chatId: 'chat-1', userId: 'user-1' });
     db.message.create.mockResolvedValue({ id: 'message-1', body: 'hello' });
     await expect(service.send('chat-1', 'user-1', { body: ' hello ' })).resolves.toEqual({ id: 'message-1', body: 'hello' });
     expect(db.message.create.mock.calls[0][0].data.body).toBe('hello');
+    expect(push.notifyNewMessage).toHaveBeenCalledWith({ id: 'message-1', body: 'hello' });
     db.chatMember.findUnique.mockResolvedValue(null);
     await expect(service.send('chat-1', 'stranger', { body: 'no' })).rejects.toBeInstanceOf(ForbiddenException);
   });

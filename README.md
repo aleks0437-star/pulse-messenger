@@ -86,6 +86,22 @@ MinIO API работает на `http://localhost:9000`, консоль — на
 - Helmet включает защитные HTTP-заголовки. CSP API сейчас отправляется как `Content-Security-Policy-Report-Only`; enforcing CSP для Next.js frontend следует задавать на frontend/reverse proxy отдельно, учитывая домены S3/CDN, Socket.IO и LiveKit.
 - Встроенный Nest Logger использует уровни `error/warn/log` в production и дополнительно `debug` в development. Request bodies, пароли, JWT и подписанные upload URL не логируются.
 
+## Web Push уведомления
+
+Web Push использует VAPID и библиотеку `web-push`. Development-ключи из `.env.example` предназначены только для локального запуска и CI. Для production создайте собственную пару:
+
+```bash
+npx web-push generate-vapid-keys --json
+```
+
+Заполните `VAPID_SUBJECT` адресом вида `mailto:admin@example.com` или HTTPS URL, а `VAPID_PUBLIC_KEY` и `VAPID_PRIVATE_KEY` — полученной парой. Во frontend передаётся только тот же публичный ключ через `NEXT_PUBLIC_VAPID_PUBLIC_KEY`; приватный ключ никогда не должен попадать в `NEXT_PUBLIC_*`, клиентскую сборку или репозиторий. После смены пары существующим браузерам потребуется оформить подписку заново.
+
+Push API доступен авторизованным пользователям: `POST /api/push/subscribe`, `POST /api/push/unsubscribe`, `GET /api/push/settings`, `PATCH /api/push/settings`. У одного аккаунта может быть несколько браузеров. При logout клиент должен вызвать `/push/unsubscribe` до удаления access token; тот же endpoint используется переключателем в профиле. Ответы push-провайдера `404` и `410` автоматически удаляют устаревшую подписку.
+
+Уведомление отправляется только при создании сообщения: не автору и не участнику, у которого открыт этот чат в активной вкладке. Redis хранит привязку активного чата к socket-соединению с TTL и очищает её при `chat:leave`/disconnect. Настройка профиля позволяет скрыть текст сообщения; для пустых media-сообщений используются подписи «📷 Фото» и «📎 Файл».
+
+Web Push требует secure context: HTTPS в production (localhost разрешён браузерами для разработки). На iOS уведомления доступны для установленного на домашний экран PWA в поддерживаемых версиях Safari. Если `ServiceWorker`, `PushManager` или Notifications API недоступны, интерфейс переключателя не показывается. Нативный permission prompt открывается только после явного клика по внутреннему баннеру или настройке.
+
 ## Проверка Docker Compose
 
 После `copy .env.example .env` замените оба JWT-секрета, затем:
@@ -139,9 +155,9 @@ Workflow `.github/workflows/ci.yml` запускается для каждого
 
 ## Контракты MVP
 
-REST: `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me`, `/health`, `/chats`, `/chats/:id/messages`, `/chats/messages/:id`, `/chats/messages/:id/reactions`, `/uploads/presign`, `/uploads/avatars/me`, `/uploads/avatars/chats/:chatId`, `/voice/:chatId/token`, `/voice/:chatId/leave`.
+REST: `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me`, `/health`, `/chats`, `/chats/:id/messages`, `/chats/messages/:id`, `/chats/messages/:id/reactions`, `/uploads/presign`, `/uploads/avatars/me`, `/uploads/avatars/chats/:chatId`, `/push/subscribe`, `/push/unsubscribe`, `/push/settings`, `/voice/:chatId/token`, `/voice/:chatId/leave`.
 
-Socket namespace `/chat`: `chat:join`, `message:send`, `message:new`, `typing:start`, `typing:stop`, `typing:update`, `presence:heartbeat`, `presence:update`.
+Socket namespace `/chat`: `chat:join`, `chat:leave`, `message:send`, `message:new`, `typing:start`, `typing:stop`, `typing:update`, `presence:heartbeat`, `presence:update`.
 
 ## Responsive и доступность
 

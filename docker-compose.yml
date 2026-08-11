@@ -66,6 +66,9 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
       NEXT_PUBLIC_LIVEKIT_URL: ${NEXT_PUBLIC_LIVEKIT_URL:-ws://localhost:7880}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@pulse.local}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-BN3m0wVDPKjh1tD4ZSZhro_7gYu7e2mayLxu01OSEEAlytRiV4S8fnr10-o38XuYNkAKOkOi9PWfE1sEiClPyt8}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-ZdpuJqeldYjWdyhv7bmtWHh7y33BPgpeTHJnUwrWcAg}
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -85,6 +88,7 @@ services:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
         NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-http://localhost:4000}
         NEXT_PUBLIC_LIVEKIT_URL: ${NEXT_PUBLIC_LIVEKIT_URL:-ws://localhost:7880}
+        NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-BN3m0wVDPKjh1tD4ZSZhro_7gYu7e2mayLxu01OSEEAlytRiV4S8fnr10-o38XuYNkAKOkOi9PWfE1sEiClPyt8}
     environment:
       NODE_ENV: production
       PORT: 3000

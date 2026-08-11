@@ -6,7 +6,8 @@ import request = require('supertest');
 import { AppModule } from '../src/app.module';
 import { hardenHttpApp } from '../src/main';
 import { PrismaService } from '../src/prisma.service';
-import { PresenceService } from '../src/realtime';
+import { PresenceService } from '../src/presence';
+import { PushService } from '../src/push';
 
 class MemoryPrisma {
   users: any[]=[]; chats:any[]=[]; members:any[]=[]; messages:any[]=[]; reactions:any[]=[]; tokens:any[]=[]; seq=0;
@@ -50,7 +51,7 @@ describe('Pulse API e2e',()=>{
   let app:INestApplication;let base:string;let db:MemoryPrisma;let alice:any;let bob:any;let eve:any;let chatId:string;
   beforeAll(async()=>{
     db=new MemoryPrisma();
-    const module=await Test.createTestingModule({imports:[AppModule]}).overrideProvider(PrismaService).useValue(db).overrideProvider(PresenceService).useValue({online:jest.fn(),offline:jest.fn(),heartbeat:jest.fn(),isOnline:jest.fn(),ping:jest.fn().mockResolvedValue('PONG')}).compile();
+    const module=await Test.createTestingModule({imports:[AppModule]}).overrideProvider(PrismaService).useValue(db).overrideProvider(PresenceService).useValue({online:jest.fn(),offline:jest.fn(),heartbeat:jest.fn(),openChat:jest.fn(),closeChat:jest.fn(),isOnline:jest.fn(),isActiveInChat:jest.fn(),ping:jest.fn().mockResolvedValue('PONG')}).overrideProvider(PushService).useValue({notifyNewMessage:jest.fn()}).compile();
     app=module.createNestApplication();hardenHttpApp(app);await app.listen(0);base=await app.getUrl();
   });
   afterAll(async()=>app.close());

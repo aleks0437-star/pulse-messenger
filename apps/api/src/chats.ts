@@ -3,6 +3,7 @@ import { ChatType, MemberRole, MessageKind } from '@prisma/client';
 import { ArrayMaxSize, ArrayUnique, IsArray, IsEnum, IsInt, IsOptional, IsString, MaxLength, Min, MinLength } from 'class-validator';
 import { JwtAuthGuard } from './auth'; import { PrismaService } from './prisma.service';
 import { StorageService } from './storage';
+import { PushService } from './push';
 
 export class CreateChatDto { @IsEnum(ChatType) type!: ChatType; @IsOptional() @IsString() @MaxLength(100) title?: string; @IsArray() @ArrayMaxSize(100) @ArrayUnique() @IsString({ each: true }) memberIds!: string[]; }
 export class MessageDto {
@@ -18,7 +19,7 @@ export class EditDto { @IsString() @MinLength(1) @MaxLength(8000) body!: string;
 export class ReactionDto { @IsString() @MinLength(1) @MaxLength(16) emoji!: string; }
 class MessagesQueryDto { @IsOptional() @IsString() @MaxLength(64) cursor?: string; }
 @Injectable() export class ChatsService {
-  constructor(private db: PrismaService, private storage: StorageService) {}
+  constructor(private db: PrismaService, private storage: StorageService, private push: PushService) {}
   member(chatId: string, userId: string) { return this.db.chatMember.findUnique({ where: { chatId_userId: { chatId, userId } } }); }
   async assertMember(chatId: string, userId: string) { if (!(await this.member(chatId, userId))) throw new ForbiddenException(); }
   list(userId: string) { return this.db.chat.findMany({ where: { members: { some: { userId } } }, include: { members: { include: { user: { select: { id:true, username:true, displayName:true, avatarUrl:true } } } }, messages: { where: { deletedAt:null }, orderBy:{createdAt:'desc'}, take:1 } }, orderBy:{updatedAt:'desc'} }); }
@@ -31,7 +32,9 @@ class MessagesQueryDto { @IsOptional() @IsString() @MaxLength(64) cursor?: strin
     const body=dto.body?.trim()??'';
     if(!body&&!dto.mediaUrl)throw new BadRequestException('Сообщение должно содержать текст или вложение');
     const kind=dto.mediaType?.startsWith('image/')?MessageKind.IMAGE:(dto.mediaUrl?MessageKind.FILE:(dto.kind??MessageKind.TEXT));
-    return this.db.message.create({data:{chatId,authorId:userId,body,replyToId:dto.replyToId,kind,mediaUrl:dto.mediaUrl,mediaName:dto.mediaName,mediaType:dto.mediaType,mediaSize:dto.mediaSize},include:{author:{select:{id:true,displayName:true,avatarUrl:true}},reactions:true,replyTo:true}});
+    const message=await this.db.message.create({data:{chatId,authorId:userId,body,replyToId:dto.replyToId,kind,mediaUrl:dto.mediaUrl,mediaName:dto.mediaName,mediaType:dto.mediaType,mediaSize:dto.mediaSize},include:{author:{select:{id:true,displayName:true,avatarUrl:true}},reactions:true,replyTo:true}});
+    await this.push.notifyNewMessage(message);
+    return message;
   }
   async edit(id:string,userId:string,body:string){const m=await this.db.message.findUnique({where:{id}});if(!m)throw new NotFoundException();await this.assertMember(m.chatId,userId);if(m.authorId!==userId)throw new ForbiddenException();const clean=body.trim();if(!clean)throw new BadRequestException('Сообщение не может быть пустым');return this.db.message.update({where:{id},data:{body:clean,editedAt:new Date()}});}
   async remove(id:string,userId:string){const m=await this.db.message.findUnique({where:{id}});if(!m)throw new NotFoundException();await this.assertMember(m.chatId,userId);if(m.authorId!==userId)throw new ForbiddenException();return this.db.message.update({where:{id},data:{body:'',deletedAt:new Date()}});}
