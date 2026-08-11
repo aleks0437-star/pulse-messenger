@@ -10,7 +10,7 @@ import { PresenceService } from '../src/presence';
 import { PushService } from '../src/push';
 
 class MemoryPrisma {
-  users: any[]=[]; chats:any[]=[]; members:any[]=[]; messages:any[]=[]; reactions:any[]=[]; tokens:any[]=[]; seq=0;
+  users: any[]=[]; chats:any[]=[]; members:any[]=[]; messages:any[]=[]; reactions:any[]=[]; tokens:any[]=[]; invites:any[]=[]; seq=0;
   user={
     create:async({data}:any)=>{const value={id:`u${++this.seq}`,avatarUrl:null,bio:null,createdAt:new Date(),updatedAt:new Date(),...data};this.users.push(value);return value},
     findFirst:async({where}:any)=>this.users.find(user=>where.OR.some((item:any)=>(item.email&&user.email===item.email)||(item.username&&user.username===item.username)))??null,
@@ -27,8 +27,20 @@ class MemoryPrisma {
     create:async({data}:any)=>{const chat={id:`c${++this.seq}`,createdAt:new Date(),updatedAt:new Date(),avatarUrl:null,...data,members:undefined};this.chats.push(chat);for(const member of data.members.create)this.members.push({chatId:chat.id,...member});return{...chat,members:this.members.filter(m=>m.chatId===chat.id).map(m=>({...m,user:this.safeUser(this.users.find(u=>u.id===m.userId))}))}},
     findMany:async({where}:any)=>this.chats.filter(chat=>this.members.some(member=>member.chatId===chat.id&&member.userId===where.members.some.userId)).map(chat=>({...chat,members:this.members.filter(m=>m.chatId===chat.id).map(m=>({...m,user:this.safeUser(this.users.find(u=>u.id===m.userId))})),messages:this.messages.filter(m=>m.chatId===chat.id&&!m.deletedAt).slice(-1)})),
     update:async({where,data}:any)=>Object.assign(this.chats.find(item=>item.id===where.id),data),
+    findUnique:async({where,select,include}:any)=>{const chat=this.chats.find(item=>item.id===where.id)??null;if(!chat)return null;if(select)return Object.fromEntries(Object.keys(select).filter(key=>select[key]).map(key=>[key,chat[key]]));if(include?.members)return{...chat,members:this.members.filter(member=>member.chatId===chat.id).map(member=>({...member,user:this.safeUser(this.users.find(user=>user.id===member.userId))}))};return chat},
   };
-  chatMember={findUnique:async({where}:any)=>this.members.find(member=>member.chatId===where.chatId_userId.chatId&&member.userId===where.chatId_userId.userId)??null};
+  chatMember={
+    findUnique:async({where,include}:any)=>{const member=this.members.find(item=>item.chatId===where.chatId_userId.chatId&&item.userId===where.chatId_userId.userId)??null;return member&&include?.user?{...member,user:this.safeUser(this.users.find(user=>user.id===member.userId))}:member},
+    create:async({data}:any)=>{const member={isMuted:false,mutedUntil:null,joinedAt:new Date(),...data};this.members.push(member);return member},
+    update:async({where,data}:any)=>Object.assign(this.members.find(item=>item.chatId===where.chatId_userId.chatId&&item.userId===where.chatId_userId.userId),data),
+    delete:async({where}:any)=>{const index=this.members.findIndex(item=>item.chatId===where.chatId_userId.chatId&&item.userId===where.chatId_userId.userId);return this.members.splice(index,1)[0]},
+  };
+  chatInvite={
+    create:async({data}:any)=>{const value={id:`i${++this.seq}`,usesCount:0,revokedAt:null,createdAt:new Date(),expiresAt:null,maxUses:null,...data};this.invites.push(value);return value},
+    findMany:async({where}:any)=>this.invites.filter(item=>item.chatId===where.chatId&&item.revokedAt===where.revokedAt).sort((a,b)=>b.createdAt.getTime()-a.createdAt.getTime()),
+    findUnique:async({where,include}:any)=>{const value=this.invites.find(item=>item.code===where.code)??null;if(!value||!include?.chat)return value;const chat=this.chats.find(item=>item.id===value.chatId);return{...value,chat:{id:chat.id,type:chat.type,title:chat.title,avatarUrl:chat.avatarUrl,_count:{members:this.members.filter(member=>member.chatId===chat.id).length}}}},
+    updateMany:async({where,data}:any)=>{const found=this.invites.filter(item=>(where.id===undefined||item.id===where.id)&&(where.chatId===undefined||item.chatId===where.chatId)&&(where.revokedAt===undefined||item.revokedAt===where.revokedAt)&&(where.usesCount?.lt===undefined||item.usesCount<where.usesCount.lt));found.forEach(item=>{if(data.usesCount?.increment)item.usesCount+=data.usesCount.increment;else Object.assign(item,data)});return{count:found.length}},
+  };
   message={
     create:async({data}:any)=>{const value={id:`m${++this.seq}`,createdAt:new Date(),editedAt:null,deletedAt:null,...data};this.messages.push(value);return this.messageView(value)},
     findMany:async({where}:any)=>this.messages.filter(item=>item.chatId===where.chatId).map(item=>this.messageView(item)).reverse(),
@@ -81,6 +93,22 @@ describe('Pulse API e2e',()=>{
   },30000);
 
   it('returns 403 when an outsider reads a foreign chat',async()=>{await request(app.getHttpServer()).get(`/api/chats/${chatId}/messages`).set('Authorization',`Bearer ${eve.accessToken}`).expect(403)});
+
+  it('joins by invite idempotently, enforces admin moderation and evicts a kicked socket',async()=>{
+    const created=await request(app.getHttpServer()).post(`/api/chats/${chatId}/invites`).set('Authorization',`Bearer ${alice.accessToken}`).send({maxUses:3}).expect(201);
+    const code=created.body.code;expect(code).toHaveLength(24);
+    await request(app.getHttpServer()).post(`/api/invites/${code}/join`).set('Authorization',`Bearer ${eve.accessToken}`).expect(201);
+    await request(app.getHttpServer()).post(`/api/invites/${code}/join`).set('Authorization',`Bearer ${eve.accessToken}`).expect(201);
+    expect(db.members.filter(member=>member.chatId===chatId&&member.userId===eve.user.id)).toHaveLength(1);
+    await request(app.getHttpServer()).post(`/api/chats/${chatId}/members/${eve.user.id}/kick`).set('Authorization',`Bearer ${bob.accessToken}`).expect(403);
+    const socket:Socket=io(`${base}/chat`,{auth:{token:eve.accessToken},transports:['websocket'],forceNew:true});
+    await new Promise<void>((resolve,reject)=>{socket.once('connect',resolve);socket.once('connect_error',reject)});
+    await new Promise<void>((resolve,reject)=>socket.timeout(5000).emit('chat:join',{chatId},(error:any)=>error?reject(error):resolve()));
+    const kicked=new Promise<any>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('kick event timed out')),5000);socket.once('chat:kicked',event=>{clearTimeout(timer);resolve(event)})});
+    await request(app.getHttpServer()).post(`/api/chats/${chatId}/members/${eve.user.id}/kick`).set('Authorization',`Bearer ${alice.accessToken}`).expect(201);
+    await expect(kicked).resolves.toEqual({chatId});socket.disconnect();
+    await request(app.getHttpServer()).get(`/api/chats/${chatId}/messages`).set('Authorization',`Bearer ${eve.accessToken}`).expect(403);
+  },15000);
 
   it('returns 429 after five login attempts for one IP+identity',async()=>{
     for(let attempt=0;attempt<5;attempt++)await request(app.getHttpServer()).post('/api/auth/login').send({login:'bruteforce@example.com',password:'wrong'}).expect(401);

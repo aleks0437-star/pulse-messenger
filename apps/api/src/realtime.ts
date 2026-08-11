@@ -3,6 +3,7 @@ import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect,
 import { IsString, MaxLength } from 'class-validator';
 import { Namespace, Socket } from 'socket.io';
 import { ChatsService, MessageDto } from './chats';
+import { ChatRealtimeService } from './chat-realtime';
 import { PresenceService } from './presence';
 import { PrismaService } from './prisma.service';
 import { getAllowedOrigins } from './security';
@@ -13,8 +14,9 @@ class SocketMessageDto extends MessageDto { @IsString() @MaxLength(64) chatId!: 
 @WebSocketGateway({ namespace:'chat', cors:{origin:getAllowedOrigins(),credentials:true} })
 export class ChatGateway implements OnGatewayInit,OnGatewayConnection,OnGatewayDisconnect {
   @WebSocketServer() server!:Namespace;
-  constructor(private jwt:JwtService,private presence:PresenceService,private chats:ChatsService,private db:PrismaService){}
+  constructor(private jwt:JwtService,private presence:PresenceService,private chats:ChatsService,private db:PrismaService,private realtime:ChatRealtimeService){}
   afterInit(server:Namespace){
+    this.realtime.attach(server);
     server.use((socket,next)=>{
       this.authenticate(socket).then(()=>next()).catch(()=>next(new Error('unauthorized')));
     });
@@ -35,7 +37,7 @@ export class ChatGateway implements OnGatewayInit,OnGatewayConnection,OnGatewayD
   @SubscribeMessage('presence:heartbeat') heartbeat(@ConnectedSocket()s:Socket){return this.presence.heartbeat(s.data.user.id,s.id,s.data.activeChatId)}
   @SubscribeMessage('chat:join') async join(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);await this.presence.openChat(s.data.user.id,s.id,d.chatId,s.data.activeChatId);s.data.activeChatId=d.chatId;await s.join(`chat:${d.chatId}`);return{ok:true}}
   @SubscribeMessage('chat:leave') async leave(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){if(s.data.activeChatId===d.chatId){await this.presence.closeChat(s.data.user.id,s.id,d.chatId);s.data.activeChatId=undefined;await s.leave(`chat:${d.chatId}`)}return{ok:true}}
-  @SubscribeMessage('message:send') async send(@ConnectedSocket()s:Socket,@MessageBody()d:SocketMessageDto){const m=await this.chats.send(d.chatId,s.data.user.id,d);this.server.to(`chat:${d.chatId}`).emit('message:new',m);return m}
+  @SubscribeMessage('message:send') async send(@ConnectedSocket()s:Socket,@MessageBody()d:SocketMessageDto){const m=await this.chats.send(d.chatId,s.data.user.id,d);this.realtime.broadcastMessage(d.chatId,m);return m}
   @SubscribeMessage('typing:start') async typingStart(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);s.to(`chat:${d.chatId}`).emit('typing:update',{chatId:d.chatId,userId:s.data.user.id,typing:true})}
   @SubscribeMessage('typing:stop') async typingStop(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);s.to(`chat:${d.chatId}`).emit('typing:update',{chatId:d.chatId,userId:s.data.user.id,typing:false})}
 }

@@ -18,7 +18,7 @@ describe('ChatGateway handshake authentication', () => {
     const jwt: any = { verify: jest.fn().mockReturnValue({ sub: 'user-1', username: 'anna', type: 'access' }) };
     const presence: any = { online: jest.fn() };
     const db: any = { user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-1' }) } };
-    const gateway = new ChatGateway(jwt, presence, {} as any, db);
+    const gateway = new ChatGateway(jwt, presence, {} as any, db, {attach:jest.fn()} as any);
     const client = socket();
     await installMiddleware(gateway)(client);
     await gateway.handleConnection(client);
@@ -30,7 +30,7 @@ describe('ChatGateway handshake authentication', () => {
   it('disconnects missing, refresh or unknown-user tokens', async () => {
     const jwt: any = { verify: jest.fn().mockReturnValue({ sub: 'user-1', username: 'anna', type: 'refresh' }) };
     const db: any = { user: { findUnique: jest.fn().mockResolvedValue(null) } };
-    const gateway = new ChatGateway(jwt, { online: jest.fn() } as any, {} as any, db);
+    const gateway = new ChatGateway(jwt, { online: jest.fn() } as any, {} as any, db, {attach:jest.fn()} as any);
     const authenticate = installMiddleware(gateway);
     const refreshClient = socket(); await expect(authenticate(refreshClient)).rejects.toThrow('unauthorized');
     const missingClient = socket(undefined as any); missingClient.handshake.auth = {}; await expect(authenticate(missingClient)).rejects.toThrow('unauthorized');
@@ -43,7 +43,7 @@ describe('ChatGateway handshake authentication', () => {
     const lookup = new Promise<{ id: string }>(resolve => { resolveLookup = resolve; });
     const jwt: any = { verify: jest.fn().mockReturnValue({ sub: 'user-1', username: 'anna', type: 'access' }) };
     const db: any = { user: { findUnique: jest.fn().mockReturnValue(lookup) } };
-    const gateway = new ChatGateway(jwt, { online: jest.fn() } as any, {} as any, db);
+    const gateway = new ChatGateway(jwt, { online: jest.fn() } as any, {} as any, db, {attach:jest.fn()} as any);
     const client = socket();
     const authentication = installMiddleware(gateway)(client);
 

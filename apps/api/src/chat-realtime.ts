@@ -1,0 +1,22 @@
+import { Injectable } from '@nestjs/common';
+import { Namespace } from 'socket.io';
+import { PresenceService } from './presence';
+
+@Injectable()
+export class ChatRealtimeService {
+  private namespace?:Namespace;
+  constructor(private presence:PresenceService){}
+  attach(namespace:Namespace){this.namespace=namespace}
+  broadcastMessage(chatId:string,message:unknown){this.namespace?.to(`chat:${chatId}`).emit('message:new',message)}
+  memberUpdated(chatId:string,member:unknown){this.namespace?.to(`chat:${chatId}`).emit('chat:member-updated',{chatId,member})}
+  memberRemoved(chatId:string,userId:string){this.namespace?.to(`chat:${chatId}`).emit('chat:member-removed',{chatId,userId})}
+  async evict(chatId:string,userId:string){
+    if(!this.namespace)return;
+    const sockets=await this.namespace.in(`user:${userId}`).fetchSockets();
+    await Promise.all(sockets.map(async socket=>{
+      await this.presence.closeChat(userId,socket.id,chatId);
+      await socket.leave(`chat:${chatId}`);
+    }));
+    this.namespace.to(`user:${userId}`).emit('chat:kicked',{chatId});
+  }
+}

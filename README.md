@@ -102,6 +102,14 @@ Push API доступен авторизованным пользователя�
 
 Web Push требует secure context: HTTPS в production (localhost разрешён браузерами для разработки). На iOS уведомления доступны для установленного на домашний экран PWA в поддерживаемых версиях Safari. Если `ServiceWorker`, `PushManager` или Notifications API недоступны, интерфейс переключателя не показывается. Нативный permission prompt открывается только после явного клика по внутреннему баннеру или настройке.
 
+## Приглашения и модерация групп
+
+Владелец или администратор группы может получить одну активную invite-ссылку, скопировать её, перевыпустить или отозвать. `WEB_APP_URL` задаёт публичную базу ссылки (локально `http://localhost:3000`). Коды создаются криптографическим генератором, могут иметь срок действия и лимит использований; повторный join существующего участника идемпотентен и не расходует лимит.
+
+Маршрут `/invite/:code` показывает безопасное превью группы. После login/register код не теряется: клиент сохраняет выданные токены, выполняет join и открывает чат. Join ограничен rate limit и повторно проверяет revoke/expiry/uses внутри транзакции.
+
+Роли группы: `OWNER`, `ADMIN`, `MEMBER`. Администраторы могут исключать обычных участников, временно или бессрочно запрещать отправку сообщений и менять роль `MEMBER`/`ADMIN`; роль владельца неизменяема, администратора нельзя исключить. Kick немедленно удаляет все сокеты пользователя из Socket.IO-комнаты и отправляет событие `chat:kicked`. Join/kick/promote/demote создают сообщения `SYSTEM`, для которых запрещены reply/edit/delete/reactions.
+
 ## Проверка Docker Compose
 
 После `copy .env.example .env` замените оба JWT-секрета, затем:
@@ -155,9 +163,9 @@ Workflow `.github/workflows/ci.yml` запускается для каждого
 
 ## Контракты MVP
 
-REST: `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me`, `/health`, `/chats`, `/chats/:id/messages`, `/chats/messages/:id`, `/chats/messages/:id/reactions`, `/uploads/presign`, `/uploads/avatars/me`, `/uploads/avatars/chats/:chatId`, `/push/subscribe`, `/push/unsubscribe`, `/push/settings`, `/voice/:chatId/token`, `/voice/:chatId/leave`.
+REST: `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me`, `/health`, `/chats`, `/chats/:id/messages`, `/chats/messages/:id`, `/chats/messages/:id/reactions`, `/chats/:id/invites`, `/chats/:id/invites/rotate`, `/invites/:code`, `/invites/:code/join`, `/chats/:id/members/:userId/kick`, `/chats/:id/members/:userId/mute`, `/chats/:id/members/:userId/role`, `/uploads/presign`, `/uploads/avatars/me`, `/uploads/avatars/chats/:chatId`, `/push/subscribe`, `/push/unsubscribe`, `/push/settings`, `/voice/:chatId/token`, `/voice/:chatId/leave`.
 
-Socket namespace `/chat`: `chat:join`, `chat:leave`, `message:send`, `message:new`, `typing:start`, `typing:stop`, `typing:update`, `presence:heartbeat`, `presence:update`.
+Socket namespace `/chat`: `chat:join`, `chat:leave`, `chat:kicked`, `chat:member-updated`, `chat:member-removed`, `message:send`, `message:new`, `typing:start`, `typing:stop`, `typing:update`, `presence:heartbeat`, `presence:update`.
 
 ## Responsive и доступность
 

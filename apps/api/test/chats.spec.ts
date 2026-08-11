@@ -3,7 +3,7 @@ import { ChatsService } from '../src/chats';
 
 function harness() {
   const db: any = {
-    chatMember: { findUnique: jest.fn() },
+    chatMember: { findUnique: jest.fn(), update: jest.fn() },
     chat: { create: jest.fn(), findMany: jest.fn() },
     message: { findUnique: jest.fn(), findMany: jest.fn(), create: jest.fn(), update: jest.fn() },
     messageReaction: { findUnique: jest.fn(), create: jest.fn(), delete: jest.fn() },
@@ -30,6 +30,23 @@ describe('ChatsService membership and messages', () => {
     expect(push.notifyNewMessage).toHaveBeenCalledWith({ id: 'message-1', body: 'hello' });
     db.chatMember.findUnique.mockResolvedValue(null);
     await expect(service.send('chat-1', 'stranger', { body: 'no' })).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('blocks muted members and automatically clears an expired mute', async () => {
+    const { db, service } = harness();
+    db.chatMember.findUnique.mockResolvedValue({ chatId:'chat-1', userId:'user-1', isMuted:true, mutedUntil:null });
+    await expect(service.send('chat-1','user-1',{body:'blocked'})).rejects.toBeInstanceOf(ForbiddenException);
+    db.chatMember.findUnique.mockResolvedValue({ chatId:'chat-1', userId:'user-1', isMuted:true, mutedUntil:new Date(Date.now()-1000) });
+    db.message.create.mockResolvedValue({id:'message-2',body:'allowed'});
+    await expect(service.send('chat-1','user-1',{body:'allowed'})).resolves.toMatchObject({body:'allowed'});
+    expect(db.chatMember.update).toHaveBeenCalledWith({where:{chatId_userId:{chatId:'chat-1',userId:'user-1'}},data:{isMuted:false,mutedUntil:null}});
+  });
+
+  it('does not allow clients to forge system messages', async () => {
+    const { db, service } = harness();
+    db.chatMember.findUnique.mockResolvedValue({ chatId:'chat-1', userId:'user-1', isMuted:false });
+    await expect(service.send('chat-1','user-1',{body:'fake event',kind:'SYSTEM' as any})).rejects.toBeInstanceOf(ForbiddenException);
+    expect(db.message.create).not.toHaveBeenCalled();
   });
 
   it('edits and deletes only own messages while still a member', async () => {

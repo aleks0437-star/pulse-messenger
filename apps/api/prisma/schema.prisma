@@ -45,6 +45,7 @@ model User {
   createdChats Chat[] @relation("ChatCreator")
   refreshTokens RefreshToken[]
   pushSubscriptions PushSubscription[]
+  createdInvites ChatInvite[] @relation("ChatInviteCreator")
 }
 
 model PushSubscription {
@@ -85,6 +86,7 @@ model Chat {
   members ChatMember[]
   messages Message[]
   voiceRooms VoiceRoom[]
+  invites ChatInvite[]
   @@index([updatedAt])
 }
 
@@ -94,11 +96,27 @@ model ChatMember {
   role MemberRole @default(MEMBER)
   joinedAt DateTime @default(now())
   lastReadAt DateTime?
+  isMuted Boolean @default(false)
   mutedUntil DateTime?
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@id([chatId, userId])
   @@index([userId])
+}
+
+model ChatInvite {
+  id String @id @default(cuid())
+  chatId String
+  code String @unique
+  createdById String
+  expiresAt DateTime?
+  maxUses Int?
+  usesCount Int @default(0)
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  createdBy User @relation("ChatInviteCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  @@index([chatId, revokedAt])
 }
 
 model Message {
