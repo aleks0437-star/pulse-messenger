@@ -80,6 +80,9 @@ MinIO API работает на `http://localhost:9000`, консоль — на
 
 - `JWT_SECRET` и `REFRESH_JWT_SECRET` обязательны и должны быть разными случайными строками минимум по 32 байта. В production у кода нет fallback-значений.
 - `ACCESS_TOKEN_TTL_SECONDS=900`, `REFRESH_TOKEN_TTL_SECONDS=2592000` задают сроки токенов. Logout отзывает refresh-токен, refresh немедленно отзывает использованный токен и выпускает новый.
+- Корневой frontend проверяет сессию до рендера Messenger и показывает общую форму login/register, если пары токенов нет или refresh недействителен. Та же форма используется invite-маршрутом.
+- API-клиент обновляет access-токен за две минуты до истечения, выполняет один общий refresh для параллельных запросов и повторяет исходный запрос после `401` не более одного раза. После неудачного refresh оба токена удаляются, а приложение возвращается к форме входа. Socket.IO получает обновлённый токен перед reconnect и повторяет handshake после silent refresh.
+- Повторная регистрация возвращает `409` с отдельным сообщением для занятой почты или username. Login всегда выполняет bcrypt-сравнение, включая неизвестный логин с фиктивным хешем. Login/register ограничены 5 попытками в минуту, refresh/logout — 30 попытками в минуту.
 - `WEB_ORIGINS` — список точных origins через запятую, например `https://app.example.com,https://admin.example.com`. Wildcard `*` запрещён; в production пустое значение останавливает запуск.
 - `TRUST_PROXY=loopback` безопасен для локального reverse proxy. При production-развёртывании задайте доверенную proxy-схему под свою инфраструктуру, иначе IP-based rate limiting может видеть адрес proxy.
 - Login/register ограничены пятью попытками в минуту для комбинации IP+email/login. Upload-presign имеет отдельный лимит 10 запросов в минуту.
@@ -148,7 +151,7 @@ npx playwright install chromium
 npm run test:smoke
 ```
 
-Smoke выполняет API login, передаёт access token приложению, открывает реальный чат, отправляет текст через Socket.IO и проверяет его появление в ленте. URL можно переопределить через `PLAYWRIGHT_API_URL` и `PLAYWRIGHT_WEB_URL`.
+Smoke проходит реальную UI-регистрацию на корневой странице, проверяет silent refresh через настоящий refresh endpoint, а затем выполняет API login, открывает реальный чат, отправляет текст через Socket.IO и проверяет его появление в ленте. URL можно переопределить через `PLAYWRIGHT_API_URL` и `PLAYWRIGHT_WEB_URL`.
 
 ## Continuous Integration
 

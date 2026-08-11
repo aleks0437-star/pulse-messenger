@@ -1,1 +1,4 @@
-import {Messenger} from '@/components/messenger';export default function Page(){return <main><Messenger/></main>}
+import { AuthGate } from "@/components/auth-gate";
+export default function Page() {
+  return <AuthGate />;
+}

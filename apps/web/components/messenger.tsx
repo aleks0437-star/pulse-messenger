@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { io, Socket } from "socket.io-client";
-import { api } from "@/lib/api";
+import { api, AUTH_EVENT, getAccessToken, refreshSession } from "@/lib/api";
 import { uploadFile, validateUpload } from "@/lib/uploads";
 import {
   AttachmentPreview,
@@ -67,65 +67,6 @@ type Chat = {
   members: GroupMember[];
   messages: Message[];
 };
-const demoUsers: User[] = [
-  { id: "u1", displayName: "Вы", username: "anna" },
-  { id: "u2", displayName: "Макс", username: "max" },
-  { id: "u3", displayName: "Лео", username: "leo" },
-];
-const now = new Date();
-const demoMembers = demoUsers.map(
-  (user, index) =>
-    ({ user, role: index === 0 ? "OWNER" : "MEMBER" }) as GroupMember,
-);
-const demoChats: Chat[] = [
-  {
-    id: "demo-1",
-    type: "GROUP",
-    title: "Дизайн-команда",
-    members: demoMembers,
-    messages: [
-      {
-        id: "m3",
-        body: "Я за! Запускайте голосовой чат.",
-        author: demoUsers[2],
-        authorId: "u3",
-        createdAt: now.toISOString(),
-        reactions: [],
-      },
-    ],
-  },
-  {
-    id: "demo-2",
-    type: "DIRECT",
-    members: demoMembers.slice(0, 2),
-    messages: [
-      {
-        id: "m2",
-        body: "Увидимся в 18:00 ✨",
-        author: demoUsers[1],
-        authorId: "u2",
-        createdAt: now.toISOString(),
-        reactions: [{ emoji: "👍", userId: "u1" }],
-      },
-    ],
-  },
-  {
-    id: "demo-3",
-    type: "GROUP",
-    title: "Вечерний движ",
-    members: demoMembers,
-    messages: [
-      {
-        id: "m1",
-        body: "Кто сегодня с нами?",
-        author: demoUsers[1],
-        authorId: "u2",
-        createdAt: now.toISOString(),
-        reactions: [],
-      },
-    ],
-  },
-];
 function avatar(name: string, online = false, url?: string) {
   return (
     <span className="relative grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-full bg-gradient-to-br from-indigo-400 to-violet-600 text-lg font-bold text-white">
@@ -149,28 +90,15 @@ function title(c: Chat, me: string) {
 }
 export function Messenger() {
   const { theme, setTheme } = useTheme();
-  const [me, setMe] = useState<User>(demoUsers[0]);
-  const [chats, setChats] = useState<Chat[]>(demoChats);
-  const [activeId, setActiveId] = useState("demo-1");
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "a",
-      body: "Привет! Макеты уже можно смотреть.",
-      author: demoUsers[0],
-      authorId: "u1",
-      createdAt: new Date(Date.now() - 3600000).toISOString(),
-      reactions: [{ emoji: "🔥", userId: "u2" }],
-    },
-    {
-      id: "b",
-      body: "Выглядит отлично. Созвонимся вечером?",
-      author: demoUsers[1],
-      authorId: "u2",
-      createdAt: new Date(Date.now() - 1800000).toISOString(),
-      reactions: [],
-    },
-    ...demoChats[0].messages,
-  ]);
+  const [me, setMe] = useState<User>({
+    id: "",
+    displayName: "Пользователь",
+    username: "",
+  });
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [chatsLoaded, setChatsLoaded] = useState(false);
+  const [activeId, setActiveId] = useState("");
+  const [messages, setMessages] = useState<Message[]>([]);
   const [text, setText] = useState("");
   const [mobileChat, setMobileChat] = useState(false);
   const [rightOpen, setRightOpen] = useState(true);
@@ -202,18 +130,39 @@ export function Messenger() {
   );
   useEffect(() => {
     navigator.serviceWorker?.register("/sw.js");
-    const token = localStorage.getItem("pulse_token");
+    const token = getAccessToken();
     if (!token) return;
     api<User>("/auth/me")
       .then(setMe)
       .catch(() => {});
     api<Chat[]>("/chats")
-      .then((cs) => cs.length && setChats(cs))
-      .catch(() => {});
-    socket.current = io(
+      .then((cs) => {
+        setChats(cs);
+        setActiveId((current) =>
+          cs.some((chat) => chat.id === current) ? current : (cs[0]?.id ?? ""),
+        );
+      })
+      .catch(() => {})
+      .finally(() => setChatsLoaded(true));
+    const client = io(
       `${process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:4000"}/chat`,
       { auth: { token } },
     );
+    socket.current = client;
+    const updateSocketAuth = () => {
+      client.auth = { token: getAccessToken() ?? "" };
+    };
+    const reconnectWithRefresh = async (error: Error) => {
+      if (error.message !== "unauthorized") return;
+      const refreshed = await refreshSession();
+      if (refreshed) {
+        client.auth = { token: refreshed };
+        client.connect();
+      }
+    };
+    window.addEventListener(AUTH_EVENT, updateSocketAuth);
+    client.io.on("reconnect_attempt", updateSocketAuth);
+    client.on("connect_error", reconnectWithRefresh);
     socket.current.on("message:new", (m: Message) =>
       setMessages((x) => (x.some((v) => v.id === m.id) ? x : [...x, m])),
     );
@@ -259,14 +208,19 @@ export function Messenger() {
         ),
     );
     socket.current.on("chat:kicked", (event: { chatId: string }) => {
-      setChats((items) => items.filter((chat) => chat.id !== event.chatId));
-      setActiveId((id) => (id === event.chatId ? "demo-1" : id));
+      setChats((items) => {
+        const remaining = items.filter((chat) => chat.id !== event.chatId);
+        setActiveId((id) =>
+          id === event.chatId ? (remaining[0]?.id ?? "") : id,
+        );
+        return remaining;
+      });
       setMobileChat(false);
       setToast("Вас исключили из группы");
     });
     const desktop = window.matchMedia("(min-width: 768px)");
     const visibility = () => {
-      if (activeId.startsWith("demo")) return;
+      if (!activeId) return;
       const chatIsOpen =
         document.visibilityState === "visible" &&
         (mobileChat || desktop.matches);
@@ -285,11 +239,14 @@ export function Messenger() {
       clearInterval(timer);
       document.removeEventListener("visibilitychange", visibility);
       desktop.removeEventListener("change", visibility);
+      window.removeEventListener(AUTH_EVENT, updateSocketAuth);
+      client.io.off("reconnect_attempt", updateSocketAuth);
+      client.off("connect_error", reconnectWithRefresh);
       socket.current?.disconnect();
     };
   }, [activeId, mobileChat]);
   useEffect(() => {
-    if (activeId.startsWith("demo")) return;
+    if (!activeId) return;
     api<Message[]>(`/chats/${activeId}/messages`)
       .then((x) => setMessages(x.reverse()))
       .catch(() => {});
@@ -375,25 +332,6 @@ export function Messenger() {
       setText("");
       return;
     }
-    if (activeId.startsWith("demo")) {
-      if (attachment) {
-        setToast("Войдите в аккаунт, чтобы загружать файлы");
-        return;
-      }
-      const m: Message = {
-        id: `local-${Date.now()}`,
-        body: text.trim(),
-        author: me,
-        authorId: me.id,
-        createdAt: new Date().toISOString(),
-        replyTo: reply ?? undefined,
-        reactions: [],
-      };
-      setMessages((x) => [...x, m]);
-      setText("");
-      setReply(null);
-      return;
-    }
     setUploading(true);
     uploadController.current = new AbortController();
     try {
@@ -465,10 +403,6 @@ export function Messenger() {
       }).catch(() => {});
   }
   async function joinVoice() {
-    if (activeId.startsWith("demo")) {
-      alert("Для LiveKit-вызова запустите backend и войдите в аккаунт.");
-      return;
-    }
     const v = await api<{ token: string; url: string }>(
       `/voice/${activeId}/token`,
       { method: "POST", body: JSON.stringify({ displayName: me.displayName }) },
@@ -476,6 +410,27 @@ export function Messenger() {
     setVoice(v);
     setRightOpen(true);
   }
+  if (!active && !chatsLoaded)
+    return (
+      <div className="grid min-h-[100dvh] place-items-center bg-slate-50 text-slate-500 dark:bg-slate-950">
+        Загружаем чаты…
+      </div>
+    );
+  if (!active)
+    return (
+      <div className="grid min-h-[100dvh] place-items-center bg-slate-50 p-4 dark:bg-slate-950">
+        <section className="w-full max-w-lg rounded-3xl bg-white p-8 text-center shadow-xl dark:bg-slate-900">
+          <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-indigo-500 text-white">
+            <MessageCircle />
+          </span>
+          <h1 className="mt-4 text-2xl font-bold">Pulse</h1>
+          <p className="mt-4 font-semibold">Пока нет чатов</p>
+          <p className="mt-1 text-sm text-slate-500">
+            Откройте приглашение от друга, чтобы присоединиться к группе.
+          </p>
+        </section>
+      </div>
+    );
   return (
     <>
       <div className="mx-auto grid h-[100dvh] max-w-[1600px] grid-cols-1 overflow-hidden bg-white shadow-soft dark:bg-slate-900 md:grid-cols-[320px_1fr] xl:grid-cols-[340px_minmax(420px,1fr)_360px]">
@@ -798,7 +753,8 @@ export function Messenger() {
               Вы не можете писать в этом чате
               {ownMembership?.mutedUntil && (
                 <small className="block font-normal">
-                  Ограничение до {new Date(ownMembership.mutedUntil).toLocaleString("ru")}
+                  Ограничение до{" "}
+                  {new Date(ownMembership.mutedUntil).toLocaleString("ru")}
                 </small>
               )}
             </div>
@@ -807,46 +763,46 @@ export function Messenger() {
               onSubmit={submit}
               className="flex items-end gap-2 border-t border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900 sm:p-4"
             >
-            <input
-              ref={fileInput}
-              type="file"
-              className="sr-only"
-              onChange={(e) => {
-                chooseFile(e.target.files?.[0]);
-                e.currentTarget.value = "";
-              }}
-            />
-            <button
-              type="button"
-              onClick={() => fileInput.current?.click()}
-              disabled={uploading}
-              className="rounded-xl p-2.5 text-slate-500 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-slate-800"
-              aria-label="Прикрепить файл"
-            >
-              <Paperclip />
-            </button>
-            <label className="flex min-h-11 flex-1 items-center rounded-2xl bg-slate-100 px-4 dark:bg-slate-800">
               <input
-                value={text}
+                ref={fileInput}
+                type="file"
+                className="sr-only"
                 onChange={(e) => {
-                  setText(e.target.value);
-                  socket.current?.emit("typing:start", { chatId: activeId });
+                  chooseFile(e.target.files?.[0]);
+                  e.currentTarget.value = "";
                 }}
-                className="w-full bg-transparent py-3 outline-none"
-                placeholder="Сообщение…"
-                aria-label="Текст сообщения"
               />
-              <button type="button" aria-label="Выбрать эмодзи">
-                <Smile className="text-slate-400" />
+              <button
+                type="button"
+                onClick={() => fileInput.current?.click()}
+                disabled={uploading}
+                className="rounded-xl p-2.5 text-slate-500 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-slate-800"
+                aria-label="Прикрепить файл"
+              >
+                <Paperclip />
               </button>
-            </label>
-            <button
-              className="rounded-xl bg-indigo-500 p-3 text-white transition hover:bg-indigo-600 disabled:opacity-40"
-              disabled={(!text.trim() && !attachment) || uploading}
-              aria-label="Отправить"
-            >
-              <Send size={20} />
-            </button>
+              <label className="flex min-h-11 flex-1 items-center rounded-2xl bg-slate-100 px-4 dark:bg-slate-800">
+                <input
+                  value={text}
+                  onChange={(e) => {
+                    setText(e.target.value);
+                    socket.current?.emit("typing:start", { chatId: activeId });
+                  }}
+                  className="w-full bg-transparent py-3 outline-none"
+                  placeholder="Сообщение…"
+                  aria-label="Текст сообщения"
+                />
+                <button type="button" aria-label="Выбрать эмодзи">
+                  <Smile className="text-slate-400" />
+                </button>
+              </label>
+              <button
+                className="rounded-xl bg-indigo-500 p-3 text-white transition hover:bg-indigo-600 disabled:opacity-40"
+                disabled={(!text.trim() && !attachment) || uploading}
+                aria-label="Отправить"
+              >
+                <Send size={20} />
+              </button>
             </form>
           )}
         </section>
@@ -958,8 +914,15 @@ export function Messenger() {
                 ) : (
                   <div className="mt-7 space-y-2">
                     {active.members.map((member) => (
-                      <div key={member.user.id} className="flex items-center gap-3 p-2">
-                        {avatar(member.user.displayName, true, member.user.avatarUrl)}
+                      <div
+                        key={member.user.id}
+                        className="flex items-center gap-3 p-2"
+                      >
+                        {avatar(
+                          member.user.displayName,
+                          true,
+                          member.user.avatarUrl,
+                        )}
                         <b>{member.user.displayName}</b>
                       </div>
                     ))}
