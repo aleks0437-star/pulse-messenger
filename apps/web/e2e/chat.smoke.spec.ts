@@ -5,6 +5,7 @@ async function seedLogin(request:any,context:any,loginName:string){
   const response=await request.post(`${api}/api/auth/login`,{data:{login:loginName,password:"demo12345"}});
   expect(response.ok()).toBeTruthy();const{accessToken,refreshToken}=await response.json();
   await context.addInitScript(({access,refresh}:{access:string;refresh:string})=>{localStorage.setItem("pulse_token",access);localStorage.setItem("pulse_refresh_token",refresh)},{access:accessToken,refresh:refreshToken});
+  return{accessToken,refreshToken};
 }
 
 test("registers a new account through the real UI form", async ({ page }) => {
@@ -118,4 +119,25 @@ test("renders the in-app push permission banner without prompting on load",async
   await page.goto("/");
   await expect(page.getByLabel("Настройки уведомлений")).toBeVisible();
   await expect(page.getByText("Включить уведомления?")).toBeVisible({timeout:10_000});
+});
+
+test("shows offline state and resynchronizes missed messages after reconnect",async({page,request,context})=>{
+  await seedLogin(request,context,"max");await page.goto("/");await page.getByRole("button",{name:/Дизайн-команда/}).first().click();
+  const api=process.env.PLAYWRIGHT_API_URL??"http://localhost:4000";
+  const anna=await request.post(`${api}/api/auth/login`,{data:{login:"anna",password:"demo12345"}});const{accessToken}=await anna.json();
+  const chats=await request.get(`${api}/api/chats`,{headers:{Authorization:`Bearer ${accessToken}`}});const chat=(await chats.json()).find((item:any)=>item.title?.includes("Дизайн"));
+  await context.setOffline(true);await expect(page.getByText("Нет соединения…")).toBeVisible();
+  const missed=`Missed ${Date.now()}`;await request.post(`${api}/api/chats/${chat.id}/messages`,{headers:{Authorization:`Bearer ${accessToken}`},data:{body:missed}});
+  await context.setOffline(false);await expect(page.getByText("Нет соединения…")).toBeHidden({timeout:15_000});await expect(page.getByText(missed,{exact:true}).last()).toBeVisible();
+});
+
+test("loads older messages at the top and revokes refresh token on logout",async({page,request,context})=>{
+  const session=await seedLogin(request,context,"leo");const api=process.env.PLAYWRIGHT_API_URL??"http://localhost:4000";
+  const chats=await request.get(`${api}/api/chats`,{headers:{Authorization:`Bearer ${session.accessToken}`}});const chat=(await chats.json()).find((item:any)=>item.title?.includes("Дизайн"));
+  const oldest=`Oldest ${Date.now()}`;
+  for(let index=0;index<52;index++)await request.post(`${api}/api/chats/${chat.id}/messages`,{headers:{Authorization:`Bearer ${session.accessToken}`},data:{body:index===0?oldest:`History ${Date.now()} ${index}`}});
+  await page.goto("/");await page.getByRole("button",{name:/Дизайн-команда/}).first().click();await expect(page.getByText(oldest,{exact:true})).toBeHidden();
+  await page.getByLabel("История сообщений").evaluate((element)=>element.dispatchEvent(new Event("scroll")));await expect(page.getByText(oldest,{exact:true})).toBeVisible();
+  await page.getByLabel("Выйти").click();await expect(page.getByText(/Войдите, чтобы продолжить общение/)).toBeVisible();
+  await request.post(`${api}/api/auth/refresh`,{data:{refreshToken:session.refreshToken}}).then(response=>expect(response.status()).toBe(401));
 });

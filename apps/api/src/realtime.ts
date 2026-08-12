@@ -36,7 +36,13 @@ export class ChatGateway implements OnGatewayInit,OnGatewayConnection,OnGatewayD
     await Promise.all(memberships.map(member=>socket.join(`chat:${member.chatId}`)));
     socket.broadcast.emit('presence:update',{userId:user.id,online:true});
   }
-  async handleDisconnect(socket:Socket){if(socket.data.user){await this.presence.closeChat(socket.data.user.id,socket.id,socket.data.activeChatId);const stillOnline=await this.presence.offline(socket.data.user.id,socket.id);if(!stillOnline)socket.broadcast.emit('presence:update',{userId:socket.data.user.id,online:false})}}
+  async handleDisconnect(socket:Socket){
+    if(!socket.data.user)return;
+    const userId=socket.data.user.id;
+    await this.presence.closeChat(userId,socket.id,socket.data.activeChatId);
+    const stillOnline=await this.presence.offline(userId,socket.id);if(stillOnline)return;
+    setTimeout(async()=>{if(await this.presence.finalizeOffline(userId))this.server.emit('presence:update',{userId,online:false})},7_000).unref?.();
+  }
   @SubscribeMessage('presence:heartbeat') heartbeat(@ConnectedSocket()s:Socket){return this.presence.heartbeat(s.data.user.id,s.id,s.data.activeChatId)}
   @SubscribeMessage('chat:join') async join(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){await this.chats.assertMember(d.chatId,s.data.user.id);const previous=s.data.activeChatId;await this.presence.openChat(s.data.user.id,s.id,d.chatId,previous);s.data.activeChatId=d.chatId;await s.join(`chat:${d.chatId}`);return{ok:true}}
   @SubscribeMessage('chat:leave') async leave(@ConnectedSocket()s:Socket,@MessageBody()d:ChatEventDto){if(s.data.activeChatId===d.chatId){await this.presence.closeChat(s.data.user.id,s.id,d.chatId);s.data.activeChatId=undefined}return{ok:true}}

@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { ChatsService } from '../src/chats';
 
 function harness() {
@@ -11,7 +11,7 @@ function harness() {
   };
   const storage: any = { assertMessageAttachment: jest.fn() };
   const push: any = { notifyNewMessage: jest.fn() };
-  const realtime:any={reactionUpdated:jest.fn(),chatCreated:jest.fn()};
+  const realtime:any={reactionUpdated:jest.fn(),chatCreated:jest.fn(),messageEdited:jest.fn(),messageDeleted:jest.fn()};
   const presence:any={isOnline:jest.fn().mockResolvedValue(false)};
   return { db, storage, push, realtime, presence, service: new ChatsService(db, storage, push,realtime,presence) };
 }
@@ -69,6 +69,15 @@ describe('ChatsService membership and messages', () => {
     db.message.findUnique.mockResolvedValue({ id: 'message-1', chatId: 'chat-1', authorId: 'user-1' });
     db.chatMember.findUnique.mockResolvedValue(null);
     await expect(service.edit('message-1', 'user-1', 'attack')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('rejects editing a deleted message and broadcasts successful edits/deletes',async()=>{
+    const{db,realtime,service}=harness();db.chatMember.findUnique.mockResolvedValue({chatId:'chat-1',userId:'user-1'});
+    db.message.findUnique.mockResolvedValue({id:'m1',chatId:'chat-1',authorId:'user-1',deletedAt:new Date()});
+    await expect(service.edit('m1','user-1','again')).rejects.toBeInstanceOf(ConflictException);
+    db.message.findUnique.mockResolvedValue({id:'m1',chatId:'chat-1',authorId:'user-1',deletedAt:null});db.message.update.mockResolvedValue({id:'m1',chatId:'chat-1',body:'changed'});
+    await service.edit('m1','user-1','changed');expect(realtime.messageEdited).toHaveBeenCalledWith('chat-1',expect.objectContaining({body:'changed'}));
+    await service.remove('m1','user-1');expect(realtime.messageDeleted).toHaveBeenCalledWith('chat-1',expect.any(Object));
   });
 
   it('adds/removes reactions for members and blocks outsiders', async () => {

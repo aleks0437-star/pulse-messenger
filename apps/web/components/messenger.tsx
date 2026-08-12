@@ -8,6 +8,7 @@ import {
   File,
   Image as ImageIcon,
   Info,
+  LogOut,
   MessageCircle,
   Mic,
   Moon,
@@ -21,11 +22,12 @@ import {
   Sun,
   Trash2,
   VolumeX,
+  WifiOff,
   X,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { io, Socket } from "socket.io-client";
-import { API, api, AUTH_EVENT, getAccessToken, refreshSession } from "@/lib/api";
+import { API, api, AUTH_EVENT, clearSession, getAccessToken, getRefreshToken, refreshSession } from "@/lib/api";
 import { uploadFile, validateUpload } from "@/lib/uploads";
 import {
   AttachmentPreview,
@@ -127,11 +129,23 @@ export function Messenger() {
   const [toast, setToast] = useState("");
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [wideLayout,setWideLayout]=useState(false);
+  const [connectionLost,setConnectionLost]=useState(false);
+  const [chatFilter,setChatFilter]=useState<"ALL"|"DIRECT"|"GROUP">("ALL");
+  const [chatSearch,setChatSearch]=useState("");
+  const [loadingOlder,setLoadingOlder]=useState(false);
+  const [hasOlder,setHasOlder]=useState(false);
+  const [activeActions,setActiveActions]=useState<string|null>(null);
   const uploadController = useRef<AbortController | null>(null);
   const voiceRef = useRef<typeof voice>(null);
   const leavingVoice = useRef(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const socket = useRef<Socket | null>(null);
+  const messageList=useRef<HTMLDivElement|null>(null);
+  const activeIdRef=useRef(activeId);
+  const mobileChatRef=useRef(mobileChat);
+  const meIdRef=useRef(me.id);
+  const messagesRef=useRef(messages);
+  const actionTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const active = chats.find((c) => c.id === activeId) ?? chats[0];
   const ownMembership = active?.members.find(
     (member) => member.user.id === me.id,
@@ -141,6 +155,11 @@ export function Messenger() {
       (!ownMembership.mutedUntil ||
         new Date(ownMembership.mutedUntil) > new Date()),
   );
+  const visibleChats=chats.filter((chat)=>(chatFilter==="ALL"||chat.type===chatFilter)&&title(chat,me.id).toLocaleLowerCase("ru").includes(chatSearch.trim().toLocaleLowerCase("ru")));
+  useEffect(()=>{activeIdRef.current=activeId},[activeId]);
+  useEffect(()=>{mobileChatRef.current=mobileChat},[mobileChat]);
+  useEffect(()=>{meIdRef.current=me.id},[me.id]);
+  useEffect(()=>{messagesRef.current=messages},[messages]);
   useEffect(()=>{voiceRef.current=voice},[voice]);
   useEffect(()=>{const media=window.matchMedia("(min-width:1280px)");const update=()=>setWideLayout(media.matches);update();media.addEventListener("change",update);return()=>media.removeEventListener("change",update)},[]);
   useEffect(()=>{
@@ -151,6 +170,17 @@ export function Messenger() {
     window.addEventListener("beforeunload",unload);
     return()=>window.removeEventListener("beforeunload",unload);
   },[]);
+  async function reloadChats(){
+    const cs=await api<Chat[]>("/chats");
+    setChats(cs);setActiveId((current)=>cs.some((chat)=>chat.id===current)?current:(cs[0]?.id??""));
+  }
+  async function reloadMessages(chatId:string){
+    const page=await api<Message[]>(`/chats/${chatId}/messages`);
+    if(activeIdRef.current!==chatId)return;
+    setMessages(page.reverse());setHasOlder(page.length===50);
+    setChats((items)=>items.map((chat)=>chat.id===chatId?{...chat,unreadCount:0}:chat));
+    await api(`/chats/${chatId}/read`,{method:"POST"});
+  }
   useEffect(() => {
     navigator.serviceWorker?.register("/sw.js");
     const token = getAccessToken();
@@ -158,13 +188,7 @@ export function Messenger() {
     api<User>("/auth/me")
       .then(setMe)
       .catch(() => {});
-    api<Chat[]>("/chats")
-      .then((cs) => {
-        setChats(cs);
-        setActiveId((current) =>
-          cs.some((chat) => chat.id === current) ? current : (cs[0]?.id ?? ""),
-        );
-      })
+    reloadChats()
       .catch(() => {})
       .finally(() => setChatsLoaded(true));
     const client = io(
@@ -186,17 +210,34 @@ export function Messenger() {
     window.addEventListener(AUTH_EVENT, updateSocketAuth);
     client.io.on("reconnect_attempt", updateSocketAuth);
     client.on("connect_error", reconnectWithRefresh);
+    let connectedBefore=false;
+    const visibility = () => {
+      const chatId=activeIdRef.current;if(!chatId)return;
+      const desktop=window.matchMedia("(min-width: 768px)");
+      const chatIsOpen=document.visibilityState==="visible"&&(mobileChatRef.current||desktop.matches);
+      client.emit(chatIsOpen?"chat:join":"chat:leave",{chatId});
+    };
+    const connected=()=>{
+      setConnectionLost(false);visibility();
+      if(connectedBefore){
+        void reloadChats().catch(()=>{});
+        const chatId=activeIdRef.current;if(chatId)void reloadMessages(chatId).catch(()=>{});
+      }
+      connectedBefore=true;
+    };
+    client.on("connect",connected);
+    client.on("disconnect",()=>setConnectionLost(true));
     socket.current.on("message:new", (m: Message) => {
       const desktop = window.matchMedia("(min-width: 768px)").matches;
-      const visible = document.visibilityState === "visible" && (mobileChat || desktop);
-      if (m.chatId === activeId) {
+      const visible = document.visibilityState === "visible" && (mobileChatRef.current || desktop);
+      if (m.chatId === activeIdRef.current) {
         setMessages((x) => (x.some((v) => v.id === m.id) ? x : [...x, m]));
         if (visible) void api(`/chats/${m.chatId}/read`, { method: "POST" });
       }
       setChats((items) => items.map((chat) => chat.id === m.chatId ? {
         ...chat,
         messages:[m],
-        unreadCount:m.authorId !== me.id && !(m.chatId === activeId && visible) ? (chat.unreadCount ?? 0) + 1 : 0,
+        unreadCount:m.authorId !== meIdRef.current && !(m.chatId === activeIdRef.current && visible) ? (chat.unreadCount ?? 0) + 1 : 0,
       } : chat));
     });
     socket.current.on("presence:update", (event: {userId:string;online:boolean}) =>
@@ -205,12 +246,14 @@ export function Messenger() {
     socket.current.on("message:reaction", (event:{messageId:string;reactions:Reaction[]}) =>
       setMessages((items)=>items.map((message)=>message.id===event.messageId?{...message,reactions:event.reactions}:message)),
     );
+    socket.current.on("message:edited",(event:{message:Message})=>setMessages((items)=>items.map((message)=>message.id===event.message.id?event.message:message)));
+    socket.current.on("message:deleted",(event:{message:Message})=>setMessages((items)=>items.map((message)=>message.id===event.message.id?event.message:message)));
     socket.current.on("chat:updated", (event:{chatId:string;chat:Partial<Chat>}) =>
       setChats((items)=>items.map((chat)=>chat.id===event.chatId?{...chat,...event.chat}:chat)),
     );
     socket.current.on("chat:created",(chat:Chat)=>setChats((items)=>items.some((item)=>item.id===chat.id)?items:[{...chat,messages:chat.messages??[],unreadCount:0},...items]));
     socket.current.on("typing:update", (d: any) => {
-      if (d.chatId === activeId) setTyping(d.typing);
+      if (d.chatId === activeIdRef.current) setTyping(d.typing);
     });
     socket.current.on(
       "chat:member-updated",
@@ -264,16 +307,6 @@ export function Messenger() {
       setToast("Вас исключили из группы");
     });
     const desktop = window.matchMedia("(min-width: 768px)");
-    const visibility = () => {
-      if (!activeId) return;
-      const chatIsOpen =
-        document.visibilityState === "visible" &&
-        (mobileChat || desktop.matches);
-      socket.current?.emit(chatIsOpen ? "chat:join" : "chat:leave", {
-        chatId: activeId,
-      });
-    };
-    socket.current.on("connect", visibility);
     document.addEventListener("visibilitychange", visibility);
     desktop.addEventListener("change", visibility);
     const timer = setInterval(
@@ -287,17 +320,14 @@ export function Messenger() {
       window.removeEventListener(AUTH_EVENT, updateSocketAuth);
       client.io.off("reconnect_attempt", updateSocketAuth);
       client.off("connect_error", reconnectWithRefresh);
+      client.off("connect",connected);
       socket.current?.disconnect();
     };
-  }, [activeId, mobileChat, me.id]);
+  }, []);
   useEffect(() => {
     if (!activeId) return;
-    api<Message[]>(`/chats/${activeId}/messages`)
-      .then((x) => {
-        setMessages(x.reverse());
-        setChats((items)=>items.map((chat)=>chat.id===activeId?{...chat,unreadCount:0}:chat));
-        return api(`/chats/${activeId}/read`,{method:"POST"});
-      })
+    setHasOlder(false);
+    reloadMessages(activeId)
       .catch(() => {});
     socket.current?.emit("chat:join", { chatId: activeId });
   }, [activeId]);
@@ -330,6 +360,20 @@ export function Messenger() {
     setMobileChat(true);
     setAttachment(null);
   }
+  async function loadOlder(){
+    if(loadingOlder||!hasOlder)return;const oldest=messagesRef.current[0];const container=messageList.current;if(!oldest||!container)return;
+    setLoadingOlder(true);const previousHeight=container.scrollHeight;
+    try{
+      const page=await api<Message[]>(`/chats/${activeIdRef.current}/messages?cursor=${encodeURIComponent(oldest.id)}`);
+      const older=page.reverse();setMessages((items)=>[...older.filter((message)=>!items.some((item)=>item.id===message.id)),...items]);setHasOlder(page.length===50);
+      requestAnimationFrame(()=>{if(messageList.current)messageList.current.scrollTop=messageList.current.scrollHeight-previousHeight});
+    }catch(error){setToast((error as Error).message)}finally{setLoadingOlder(false)}
+  }
+  async function logout(){
+    const refreshToken=getRefreshToken();
+    try{if(refreshToken)await api("/auth/logout",{method:"POST",body:JSON.stringify({refreshToken})})}
+    catch{}finally{socket.current?.disconnect();clearSession()}
+  }
   function chooseFile(file?: File) {
     if (!file) return;
     try {
@@ -347,18 +391,16 @@ export function Messenger() {
   }
   async function sendMessage(payload: Record<string, unknown>) {
     if (socket.current?.connected)
-      return new Promise<Message>((resolve, reject) =>
-        socket
-          .current!.timeout(10000)
-          .emit(
+      return new Promise<Message>((resolve, reject) => {
+        const client=socket.current!;
+        const exception=(value:{message?:string}|string)=>{client.off("exception",exception);reject(new Error(typeof value==="string"?value:(value.message??"Не удалось отправить сообщение")))};
+        client.once("exception",exception);
+        client.timeout(10000).emit(
             "message:send",
             payload,
-            (error: Error | null, message: Message) =>
-              error
-                ? reject(new Error("Не удалось отправить сообщение"))
-                : resolve(message),
-          ),
-      );
+            (error: Error | null, message: Message) => {client.off("exception",exception);error?reject(new Error("Не удалось отправить сообщение")):resolve(message)},
+          );
+      });
     return api<Message>(`/chats/${activeId}/messages`, {
       method: "POST",
       body: JSON.stringify(payload),
@@ -368,20 +410,13 @@ export function Messenger() {
     e.preventDefault();
     if ((!text.trim() && !attachment) || uploading) return;
     if (editing) {
-      setMessages((xs) =>
-        xs.map((m) =>
-          m.id === editing.id
-            ? { ...m, body: text, editedAt: new Date().toISOString() }
-            : m,
-        ),
-      );
-      if (!editing.id.startsWith("local"))
-        api(`/chats/messages/${editing.id}`, {
+      try{
+        const updated=await api<Message>(`/chats/messages/${editing.id}`, {
           method: "PATCH",
           body: JSON.stringify({ body: text }),
-        }).catch((error) => setToast(error.message));
-      setEditing(null);
-      setText("");
+        });
+        setMessages((items)=>items.map((message)=>message.id===updated.id?updated:message));setEditing(null);setText("");
+      }catch(error){setToast((error as Error).message)}
       return;
     }
     setUploading(true);
@@ -429,16 +464,9 @@ export function Messenger() {
     setEditing(m);
     setText(m.body);
   }
-  function remove(m: Message) {
-    setMessages((x) =>
-      x.map((v) =>
-        v.id === m.id
-          ? { ...v, body: "", deletedAt: new Date().toISOString() }
-          : v,
-      ),
-    );
-    if (!m.id.startsWith("local"))
-      api(`/chats/messages/${m.id}`, { method: "DELETE" }).catch(() => {});
+  async function remove(m: Message) {
+    try{const deleted=await api<Message>(`/chats/messages/${m.id}`,{method:"DELETE"});setMessages((items)=>items.map((message)=>message.id===m.id?deleted:message))}
+    catch(error){setToast((error as Error).message)}
   }
   function react(m: Message, emoji: string) {
     const existing=m.reactions.some((reaction)=>reaction.userId===me.id&&reaction.emoji===emoji);
@@ -530,18 +558,22 @@ export function Messenger() {
             <label className="flex items-center gap-2 rounded-2xl bg-slate-100 px-4 py-3 dark:bg-slate-800">
               <Search size={18} />
               <input
+                value={chatSearch}
+                onChange={(event)=>setChatSearch(event.target.value)}
                 className="w-full bg-transparent outline-none"
                 placeholder="Поиск"
                 aria-label="Поиск по чатам"
               />
             </label>
             <div className="mt-3 flex gap-1" role="tablist">
-              {["Все", "Личные", "Группы"].map((x, i) => (
+              {([["ALL","Все"],["DIRECT","Личные"],["GROUP","Группы"]] as const).map(([value,label]) => (
                 <button
-                  key={x}
-                  className={`rounded-xl px-3 py-2 text-sm font-medium ${i === 0 ? "bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50" : "text-slate-500"}`}
+                  key={value}
+                  onClick={()=>setChatFilter(value)}
+                  aria-pressed={chatFilter===value}
+                  className={`rounded-xl px-3 py-2 text-sm font-medium ${chatFilter===value ? "bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50" : "text-slate-500"}`}
                 >
-                  {x}
+                  {label}
                 </button>
               ))}
               <button
@@ -555,7 +587,7 @@ export function Messenger() {
             </div>
           </div>
           <nav className="scrollbar mt-3 flex-1 overflow-y-auto px-2">
-            {chats.map((c) => {
+            {visibleChats.map((c) => {
               const n = title(c, me.id);
               return (
                 <button
@@ -585,6 +617,7 @@ export function Messenger() {
                 </button>
               );
             })}
+            {visibleChats.length===0&&<p className="px-4 py-8 text-center text-sm text-slate-500">Чаты не найдены</p>}
           </nav>
           <footer className="flex items-center gap-3 border-t border-slate-200 p-4 dark:border-slate-800">
             <AvatarUploader
@@ -603,6 +636,7 @@ export function Messenger() {
               </small>
             </span>
             <PushNotifications onError={setToast} />
+            <button onClick={()=>void logout()} className="rounded-xl p-2 text-slate-500 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-950/30" aria-label="Выйти"><LogOut size={20}/></button>
           </footer>
         </aside>
         <section
@@ -665,9 +699,13 @@ export function Messenger() {
             </button>
           </header>
           <div
+            ref={messageList}
+            onScroll={(event)=>{if(event.currentTarget.scrollTop<80)void loadOlder()}}
             className="scrollbar flex-1 space-y-3 overflow-y-auto bg-slate-50/70 p-4 dark:bg-slate-950/30 sm:p-6"
+            aria-label="История сообщений"
             aria-live="polite"
           >
+            {loadingOlder&&<div className="mx-auto w-fit rounded-full bg-white px-3 py-1 text-xs text-slate-500 shadow dark:bg-slate-800">Загружаем историю…</div>}
             <div className="mx-auto my-5 w-fit rounded-full bg-slate-200 px-3 py-1 text-xs text-slate-500 dark:bg-slate-800">
               Сегодня
             </div>
@@ -685,6 +723,11 @@ export function Messenger() {
               return (
                 <article
                   key={m.id}
+                  tabIndex={0}
+                  onPointerDown={(event)=>{if(event.pointerType==="mouse")return;actionTimer.current=setTimeout(()=>setActiveActions(m.id),500)}}
+                  onPointerUp={()=>{if(actionTimer.current)clearTimeout(actionTimer.current)}}
+                  onPointerCancel={()=>{if(actionTimer.current)clearTimeout(actionTimer.current)}}
+                  onBlur={(event)=>{if(!event.currentTarget.contains(event.relatedTarget))setActiveActions(null)}}
                   className={`message-pop group flex gap-2 ${mine ? "justify-end" : ""}`}
                 >
                   {!mine &&
@@ -736,7 +779,7 @@ export function Messenger() {
                         {mine && <Check size={13} />}
                       </span>
                       <div
-                        className={`absolute top-0 z-10 hidden -translate-y-full gap-1 rounded-xl bg-white p-1 shadow-lg group-hover:flex dark:bg-slate-700 ${mine ? "right-0" : "left-0"}`}
+                        className={`absolute top-0 z-10 ${activeActions===m.id?"flex":"hidden"} -translate-y-full gap-1 rounded-xl bg-white p-1 shadow-lg group-hover:flex group-focus-within:flex dark:bg-slate-700 ${mine ? "right-0" : "left-0"}`}
                       >
                         <button
                           onClick={() => setReply(m)}
@@ -1019,6 +1062,7 @@ export function Messenger() {
           )}
         </aside>
       </div>
+      {connectionLost&&<div role="status" className="fixed left-1/2 top-3 z-[80] flex -translate-x-1/2 items-center gap-2 rounded-full bg-amber-500 px-4 py-2 text-sm font-semibold text-white shadow-lg"><WifiOff size={16}/>Нет соединения…</div>}
       {voice&&!wideLayout&&<div className="fixed inset-0 z-[65] bg-slate-950/60 md:grid md:place-items-center md:p-6"><section aria-label="Активный голосовой чат" className="h-full w-full overflow-hidden bg-white shadow-2xl dark:bg-slate-900 md:h-[min(720px,calc(100dvh-3rem))] md:max-w-md md:rounded-3xl"><VoicePanel token={voice.token} url={voice.url} onLeave={()=>void leaveVoice()} onError={setToast}/></section></div>}
       <NewChatDialog open={newChatOpen} onClose={()=>setNewChatOpen(false)} onCreated={acceptCreated} onError={setToast}/>
       <ImageViewer image={viewer} onClose={() => setViewer(null)} />

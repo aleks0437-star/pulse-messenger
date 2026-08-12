@@ -9,6 +9,8 @@ export class ChatRealtimeService {
   attach(namespace:Namespace){this.namespace=namespace}
   broadcastMessage(chatId:string,message:unknown){this.namespace?.to(`chat:${chatId}`).emit('message:new',message)}
   reactionUpdated(chatId:string,messageId:string,reactions:unknown){this.namespace?.to(`chat:${chatId}`).emit('message:reaction',{chatId,messageId,reactions})}
+  messageEdited(chatId:string,message:unknown){this.namespace?.to(`chat:${chatId}`).emit('message:edited',{chatId,message})}
+  messageDeleted(chatId:string,message:unknown){this.namespace?.to(`chat:${chatId}`).emit('message:deleted',{chatId,message})}
   memberUpdated(chatId:string,member:unknown){this.namespace?.to(`chat:${chatId}`).emit('chat:member-updated',{chatId,member})}
   chatUpdated(chatId:string,chat:unknown){this.namespace?.to(`chat:${chatId}`).emit('chat:updated',{chatId,chat})}
   async chatCreated(userIds:string[],chatId:string,chat:unknown){

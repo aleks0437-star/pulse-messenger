@@ -28,6 +28,18 @@ describe('ChatGateway handshake authentication', () => {
     expect(presence.online).toHaveBeenCalledWith('user-1',client.id);
   });
 
+  it('uses a grace period before broadcasting offline presence',async()=>{
+    jest.useFakeTimers();
+    const presence:any={closeChat:jest.fn(),offline:jest.fn().mockResolvedValue(false),finalizeOffline:jest.fn().mockResolvedValue(true)};
+    const realtime:any={attach:jest.fn()};const gateway=new ChatGateway({} as any,presence,{} as any,{} as any,realtime);
+    gateway.server={emit:jest.fn()} as any;const client=socket();client.data.user={id:'user-1'};client.data.activeChatId='chat-1';
+    await gateway.handleDisconnect(client);expect(gateway.server.emit).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(7_000);
+    expect(presence.finalizeOffline).toHaveBeenCalledWith('user-1');
+    expect(gateway.server.emit).toHaveBeenCalledWith('presence:update',{userId:'user-1',online:false});
+    jest.useRealTimers();
+  });
+
   it('disconnects missing, refresh or unknown-user tokens', async () => {
     const jwt: any = { verify: jest.fn().mockReturnValue({ sub: 'user-1', username: 'anna', type: 'refresh' }) };
     const db: any = { user: { findUnique: jest.fn().mockResolvedValue(null) },chatMember:{findMany:jest.fn()} };

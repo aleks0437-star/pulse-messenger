@@ -14,8 +14,12 @@ export class PresenceService implements OnModuleDestroy {
   async offline(id:string,socketId?:string){
     if(socketId)await this.redis.srem(this.socketsKey(id),socketId);
     const remaining=socketId?await this.redis.scard(this.socketsKey(id)):0;
-    if(remaining>0){await this.redis.expire(this.socketsKey(id),70);return true}
-    await this.redis.del(`presence:${id}`,this.socketsKey(id));return false;
+    if(remaining>0)await this.redis.expire(this.socketsKey(id),70);
+    return remaining>0;
+  }
+  async finalizeOffline(id:string){
+    if(await this.redis.scard(this.socketsKey(id))>0)return false;
+    await this.redis.del(`presence:${id}`,this.socketsKey(id));return true;
   }
   async heartbeat(id:string,socketId?:string,chatId?:string){
     await this.online(id,socketId);

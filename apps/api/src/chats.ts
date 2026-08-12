@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, Injectable, NotFoundException, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Injectable, NotFoundException, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ChatType, MemberRole, MessageKind } from '@prisma/client';
 import { ArrayMaxSize, ArrayUnique, IsArray, IsEnum, IsInt, IsOptional, IsString, MaxLength, Min, MinLength } from 'class-validator';
 import { JwtAuthGuard } from './auth'; import { PrismaService } from './prisma.service';
@@ -64,8 +64,8 @@ class MessagesQueryDto { @IsOptional() @IsString() @MaxLength(64) cursor?: strin
     await this.push.notifyNewMessage(message);
     return message;
   }
-  async edit(id:string,userId:string,body:string){const m=await this.db.message.findUnique({where:{id}});if(!m)throw new NotFoundException();await this.assertMember(m.chatId,userId);if(m.kind===MessageKind.SYSTEM||m.authorId!==userId)throw new ForbiddenException();const clean=body.trim();if(!clean)throw new BadRequestException('Сообщение не может быть пустым');return this.db.message.update({where:{id},data:{body:clean,editedAt:new Date()}});}
-  async remove(id:string,userId:string){const m=await this.db.message.findUnique({where:{id}});if(!m)throw new NotFoundException();await this.assertMember(m.chatId,userId);if(m.kind===MessageKind.SYSTEM||m.authorId!==userId)throw new ForbiddenException();return this.db.message.update({where:{id},data:{body:'',deletedAt:new Date()}});}
+  async edit(id:string,userId:string,body:string){const m=await this.db.message.findUnique({where:{id}});if(!m)throw new NotFoundException();await this.assertMember(m.chatId,userId);if(m.kind===MessageKind.SYSTEM||m.authorId!==userId)throw new ForbiddenException();if(m.deletedAt)throw new ConflictException('Удалённое сообщение нельзя редактировать');const clean=body.trim();if(!clean)throw new BadRequestException('Сообщение не может быть пустым');const updated=await this.db.message.update({where:{id},data:{body:clean,editedAt:new Date()},include:{author:{select:{id:true,displayName:true,avatarUrl:true}},reactions:true,replyTo:true}});this.realtime.messageEdited(m.chatId,updated);return updated;}
+  async remove(id:string,userId:string){const m=await this.db.message.findUnique({where:{id}});if(!m)throw new NotFoundException();await this.assertMember(m.chatId,userId);if(m.kind===MessageKind.SYSTEM||m.authorId!==userId)throw new ForbiddenException();const updated=await this.db.message.update({where:{id},data:{body:'',deletedAt:new Date()},include:{author:{select:{id:true,displayName:true,avatarUrl:true}},reactions:true,replyTo:true}});this.realtime.messageDeleted(m.chatId,updated);return updated;}
   async react(id:string,userId:string,emoji:string){
     const m=await this.db.message.findUnique({where:{id}});if(!m)throw new NotFoundException();await this.assertMember(m.chatId,userId);if(m.kind===MessageKind.SYSTEM)throw new ForbiddenException('Системные сообщения не поддерживают реакции');
     const key={messageId_userId_emoji:{messageId:id,userId,emoji}};const old=await this.db.messageReaction.findUnique({where:key});

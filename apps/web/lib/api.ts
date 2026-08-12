@@ -102,12 +102,21 @@ function mayRefresh(path: string) {
     "/auth/logout",
   ].includes(path);
 }
+async function timedFetch(url:string,options:RequestInit,timeoutMs=20_000){
+  const controller=new AbortController();let timedOut=false;
+  const abort=()=>controller.abort(options.signal?.reason);
+  if(options.signal?.aborted)abort();else options.signal?.addEventListener("abort",abort,{once:true});
+  const timer=setTimeout(()=>{timedOut=true;controller.abort()},timeoutMs);
+  try{return await fetch(url,{...options,signal:controller.signal})}
+  catch(error){if(timedOut)throw new Error("Сервер не ответил вовремя. Проверьте соединение");throw error}
+  finally{clearTimeout(timer);options.signal?.removeEventListener("abort",abort)}
+}
 export async function api<T>(path: string, options: RequestInit = {}) {
   let token = getAccessToken();
   if (mayRefresh(path) && (!token || accessTokenExpiresAt(token) <= Date.now()))
     token = await ensureFreshAccessToken();
   const request = (access: string | null) =>
-    fetch(`${API}/api${path}`, {
+    timedFetch(`${API}/api${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
