@@ -225,8 +225,19 @@ export function Messenger() {
       }
       connectedBefore=true;
     };
+    const disconnected=()=>setConnectionLost(true);
+    const browserOffline=()=>{
+      setConnectionLost(true);
+      client.disconnect();
+    };
+    const browserOnline=()=>{
+      updateSocketAuth();
+      client.connect();
+    };
     client.on("connect",connected);
-    client.on("disconnect",()=>setConnectionLost(true));
+    client.on("disconnect",disconnected);
+    window.addEventListener("offline",browserOffline);
+    window.addEventListener("online",browserOnline);
     socket.current.on("message:new", (m: Message) => {
       const desktop = window.matchMedia("(min-width: 768px)").matches;
       const visible = document.visibilityState === "visible" && (mobileChatRef.current || desktop);
@@ -318,9 +329,12 @@ export function Messenger() {
       document.removeEventListener("visibilitychange", visibility);
       desktop.removeEventListener("change", visibility);
       window.removeEventListener(AUTH_EVENT, updateSocketAuth);
+      window.removeEventListener("offline",browserOffline);
+      window.removeEventListener("online",browserOnline);
       client.io.off("reconnect_attempt", updateSocketAuth);
       client.off("connect_error", reconnectWithRefresh);
       client.off("connect",connected);
+      client.off("disconnect",disconnected);
       socket.current?.disconnect();
     };
   }, []);
